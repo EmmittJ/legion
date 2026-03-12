@@ -17,7 +17,7 @@ metadata:
 | Diablo | Archon Binary Engineer | `diablo.agent.md` | Archon Go binary: pulse/watcher loops, Docker spawning |
 | Baal | Vessel Driver Engineer | `baal.agent.md` | Vessel-driver binary: ACP client, git ops, container entrypoint |
 | Azmodan | Platform/DevOps Engineer | `azmodan.agent.md` | Docker Compose, Dockerfiles, vessel image hierarchy |
-| Belial | Architecture Reviewer | `belial.agent.md` | On-demand only — high-stakes, cross-cutting, or security-sensitive changes |
+| Belial | Operator CLI Engineer | `belial.agent.md` | `lg` CLI binary (invoke/status/log) + cross-domain peer reviewer |
 | Andariel | QA/Test Engineer | `andariel.agent.md` | Test harness, build validation, bug hunting; peer reviewer for any domain |
 | Duriel | Scribe | `duriel.agent.md` | Commits, branches, pull requests |
 
@@ -30,11 +30,10 @@ metadata:
 | archon, pulse loop, watcher loop, docker spawn, controller | Archon Binary Engineer (agent: Diablo) |
 | vessel driver, ACP, JSON-RPC, stdio, acp client, copilot session | Vessel Driver Engineer (agent: Baal) |
 | docker compose, dockerfile, container, image, vessel image, infra | Platform/DevOps Engineer (agent: Azmodan) |
+| lg, lg invoke, lg status, lg log, operator CLI | Operator CLI Engineer (agent: Belial) |
 | test, tests, testing, build validation, go test, vet, coverage | QA/Test Engineer (agent: Andariel) |
-| peer review, review wisp, `review:` wisp | Route to builder who did NOT author the change; Andariel can review any domain |
-| architecture decision, security, breaking change, protocol change | Architecture Reviewer (agent: Belial) — escalation only |
+| peer review, review wisp, `review:` wisp | Route to builder who did NOT author the change; Belial and Andariel can review any domain |
 | commit, PR, branch, push, git, merge | Scribe (agent: Duriel) |
-| lg invoke, lg status, lg log, CLI, lg CLI | Vessel Driver Engineer (agent: Baal) — lg CLI is thin; route to Baal |
 
 ---
 
@@ -63,8 +62,8 @@ Mephisto → Diablo/Baal/Azmodan/Andariel (parallel where possible)
 
 | Skill | Who uses it | When to apply |
 |---|---|---|
-| `go-best-practices/` | Diablo, Baal, Andariel | Any Go implementation or peer review task |
-| `acp-protocol/` | Baal | Writing or reviewing ACP client / vessel-driver |
+| `go-best-practices/` | Diablo, Baal, Belial, Andariel | Any Go implementation or peer review task |
+| `acp-protocol/` | Baal, Belial | Writing or reviewing ACP client / vessel-driver |
 | `docker-best-practices/` | Azmodan | Any Dockerfile or docker-compose change |
 | `conventional-commits/` | Duriel | Every commit and PR |
 | `git-best-practices/` | Diablo, Baal, Duriel | Branch ops, conflict resolution, push decisions |

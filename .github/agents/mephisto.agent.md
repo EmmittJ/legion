@@ -50,7 +50,7 @@ genuinely requires a previous agent's output. Synthesize all results before repl
 | Diablo | Archon Binary Engineer | Archon Go binary: pulse/watcher loops, Docker spawning |
 | Baal | Vessel Driver Engineer | Vessel-driver binary: ACP client, git ops, container entrypoint |
 | Azmodan | Platform/DevOps Engineer | Docker Compose, Dockerfiles, vessel image hierarchy |
-| Belial | Code Reviewer | Code review against acceptance criteria before any merge |
+| Belial | Operator CLI Engineer | `lg` CLI binary (invoke/status/log) + cross-domain peer reviewer |
 | Andariel | QA/Test Engineer | Test harness, build validation, bug hunting |
 | Duriel | Scribe | Commits, branches, pull requests |
 
