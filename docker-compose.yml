@@ -1,6 +1,6 @@
 # Legion local dev stack
 # Required env vars: REPO_URL, GITHUB_TOKEN
-# Optional env vars: VESSEL_IMAGE (default: legion/vessel-copilot:latest), ARCHON_TIMEOUT (default: 3600)
+# Optional env vars: VESSEL_IMAGE (default: legion/vessel-copilot:latest), ARCHON_TIMEOUT (default: 3600), VESSEL_MODEL (default: gpt-5-mini)
 # Usage:
 #   docker compose build
 #   REPO_URL=https://github.com/owner/repo GITHUB_TOKEN=ghp_xxx docker compose up
@@ -30,6 +30,7 @@ services:
       - VESSEL_IMAGE=${VESSEL_IMAGE:-legion/vessel-copilot:latest}
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - ARCHON_TIMEOUT=${ARCHON_TIMEOUT:-3600}
+      - VESSEL_MODEL=${VESSEL_MODEL:-gpt-5-mini}
     depends_on:
       dolt:
         condition: service_healthy

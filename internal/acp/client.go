@@ -60,8 +60,13 @@ type notification struct {
 }
 
 // New starts the ACP server process and begins reading its stdout.
-func New(ctx context.Context) (*Client, error) {
-	cmd := exec.CommandContext(ctx, "copilot", "--acp", "--stdio")
+// If model is non-empty, it is passed to the server via --model.
+func New(ctx context.Context, model string) (*Client, error) {
+	args := []string{"--acp", "--stdio"}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	cmd := exec.CommandContext(ctx, "copilot", args...)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

@@ -42,7 +42,8 @@ func main() {
 	ctx := context.Background()
 
 	// Step 5: Start ACP server.
-	client, err := acp.New(ctx)
+	model := os.Getenv("VESSEL_MODEL")
+	client, err := acp.New(ctx, model)
 	if err != nil {
 		markFailed(issueID, "ACP start failed")
 		log.Fatalf("vessel-driver: acp.New: %v", err)
