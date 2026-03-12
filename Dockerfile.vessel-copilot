@@ -1,0 +1,37 @@
+# legion/vessel-copilot
+# Vessel image: vessel-driver + bd CLI + GitHub Copilot CLI
+#
+# Build:
+#   docker build -f Dockerfile.vessel-copilot -t legion/vessel-copilot:latest .
+#
+# The vessel-driver and copilot binaries must be present in the build context:
+#   vessel-driver  — built via: CGO_ENABLED=0 GOOS=linux go build ./cmd/vessel-driver
+#   copilot        — see ARG COPILOT_BINARY below
+
+FROM debian:bookworm-slim
+
+# Install system dependencies in a single layer; clean apt lists to minimize image size
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        git \
+        curl \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Beads CLI — baked in at build time
+RUN curl -fsSL https://github.com/steveyegge/beads/releases/latest/download/bd-linux-amd64 \
+    -o /usr/local/bin/bd \
+    && chmod +x /usr/local/bin/bd
+
+# Copilot CLI — standalone binary, started as ACP server via `copilot --acp --stdio`
+# TODO: replace with official copilot release URL when available
+# https://docs.github.com/en/copilot/reference/copilot-cli-reference/acp-server
+ARG COPILOT_BINARY=./copilot
+COPY ${COPILOT_BINARY} /usr/local/bin/copilot
+RUN chmod +x /usr/local/bin/copilot
+
+# Vessel Driver — ACP client; reads ISSUE_ID, drives Copilot via JSON-RPC over stdio
+COPY vessel-driver /usr/local/bin/vessel-driver
+RUN chmod +x /usr/local/bin/vessel-driver
+
+ENTRYPOINT ["/usr/local/bin/vessel-driver"]

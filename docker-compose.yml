@@ -1,0 +1,47 @@
+# Legion local dev stack
+# Required env vars: REPO_URL, GITHUB_TOKEN
+# Optional env vars: VESSEL_IMAGE (default: legion/vessel-copilot:latest), ARCHON_TIMEOUT (default: 3600)
+# Usage:
+#   docker compose build
+#   REPO_URL=https://github.com/owner/repo GITHUB_TOKEN=ghp_xxx docker compose up
+
+services:
+  dolt:
+    image: dolthub/dolt-sql-server:latest
+    ports:
+      - "3307:3306"
+    volumes:
+      - dolt-data:/var/lib/dolt
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-P", "3306"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - legion-net
+
+  archon:
+    build:
+      context: .
+      dockerfile: cmd/archon/Dockerfile
+    environment:
+      - DOLT_DSN=mysql://root@dolt:3306/legion
+      - REPO_URL=${REPO_URL}
+      - VESSEL_IMAGE=${VESSEL_IMAGE:-legion/vessel-copilot:latest}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - ARCHON_TIMEOUT=${ARCHON_TIMEOUT:-3600}
+    depends_on:
+      dolt:
+        condition: service_healthy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+    networks:
+      - legion-net
+
+volumes:
+  dolt-data:
+
+networks:
+  legion-net:
+    driver: bridge
