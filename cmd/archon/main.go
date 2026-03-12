@@ -144,6 +144,13 @@ func claimIssue(issueID string) error {
 	return err
 }
 
+// markDone closes an issue in Beads with reason "completed" — correct terminal state for a clean vessel exit.
+func markDone(issueID string) {
+	if _, err := run("bd", "close", issueID, "--reason", "completed"); err != nil {
+		log.Printf("ERROR: closing issue %s: %v", issueID, err)
+	}
+}
+
 // markError marks an issue blocked in Beads and appends a reason note.
 // "failed" is not a valid Beads status; blocked is the correct terminal-error state.
 func markError(issueID, reason string) {
@@ -172,6 +179,15 @@ func spawnVessel(cfg config, issueID, name string) error {
 		cfg.vesselImage,
 	)
 	return err
+}
+
+// removeContainer removes a stopped container via `docker rm -f`. Best-effort:
+// if the container is already gone or the call fails for any reason, the error
+// is logged and swallowed — callers must not depend on this succeeding.
+func removeContainer(name string) {
+	if _, err := run("docker", "rm", "-f", name); err != nil {
+		log.Printf("WARN: removing container %s: %v", name, err)
+	}
 }
 
 func inspectState(name string) (containerState, error) {
@@ -224,11 +240,14 @@ func watch(cfg config, t *tracker) {
 		switch {
 		case state.Status == "exited" && state.ExitCode == 0:
 			log.Printf("vessel %s exited cleanly (issue %s)", name, e.issueID)
+			markDone(e.issueID)
+			removeContainer(name)
 			t.remove(name)
 
 		case state.Status == "exited":
 			log.Printf("vessel %s exited with code %d (issue %s)", name, state.ExitCode, e.issueID)
 			markError(e.issueID, fmt.Sprintf("vessel exited with code %d", state.ExitCode))
+			removeContainer(name)
 			t.remove(name)
 
 		case time.Since(e.startedAt) > cfg.timeout:
@@ -237,6 +256,7 @@ func watch(cfg config, t *tracker) {
 			if _, err := run("docker", "stop", name); err != nil {
 				log.Printf("ERROR: stopping timed-out vessel %s: %v", name, err)
 			}
+			removeContainer(name)
 			t.remove(name)
 		}
 	}
