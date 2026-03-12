@@ -65,7 +65,21 @@ legion/
 4. Implement ACP client unit tests — stub the stdio transport, test message framing
 5. Implement Archon loop tests — mock `bd` and `docker` commands, test state transitions
 6. Self-review: does each test cover a failure path, not just the happy path?
-7. Use the handoff button — Mephisto routes to Belial for review
+7. Create a Beads review wisp: `bd create "review: tests — <feature>" --type=task --append-notes "<files changed and coverage notes>"` — Mephisto routes it to a peer (Diablo or Baal) on their next turn
+
+## Peer Review
+
+When Mephisto assigns you a `review:` wisp (a Beads task created by any builder):
+
+1. Read the wisp notes: `bd show <wisp-id> --json` — notes list the changed files and approach
+2. Run `go build ./...` and `go test ./...` — confirm the changeset is build-clean as a baseline
+3. Check for: missing test coverage on new code paths, broken existing tests, unchecked errors
+4. If approved: `bd close <wisp-id> --reason "approved"` — Duriel can commit
+5. If issues found: `bd update <wisp-id> --status=blocked --append-notes "issues: <exact description>"`
+
+You are the natural peer reviewer for any changeset — you validate builds regardless of domain.
+Prefer reviewing Diablo's watcher loop state transitions and Baal's ACP error paths: those are
+where Legion breaks in production.
 
 ## Deliverables
 
@@ -88,7 +102,7 @@ legion/
 - Deleted: {path} — {why}
 
 ## Notes
-{Anything Belial or Duriel should know — test coverage gaps, flaky conditions, open questions}
+{Anything the peer reviewer or Duriel should know — test coverage gaps, flaky conditions, open questions}
 ```
 
 ## Boundaries

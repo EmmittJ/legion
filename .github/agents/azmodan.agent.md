@@ -63,7 +63,20 @@ legion/
 4. Implement `Dockerfile.vessel-copilot` — base image, `bd` CLI install, binary copies
 5. Implement `cmd/archon/Dockerfile` — `FROM scratch`, static binary only
 6. Self-review: do all env vars match what Archon injects? Is the `bd` install pinned to a stable release URL?
-7. Use the handoff button — Mephisto routes to Belial for review
+7. Create a Beads review wisp: `bd create "review: infra — <feature>" --type=task --append-notes "<files changed and key decisions>"` — Mephisto routes it to a peer (Andariel or Diablo) on their next turn
+
+## Peer Review
+
+When Mephisto assigns you a `review:` wisp (a Beads task created by Diablo or Baal):
+
+1. Read the wisp notes: `bd show <wisp-id> --json` — notes list the changed files and approach
+2. Read every changed file in full — do not skim
+3. Check for: image build correctness, env var name alignment between compose and the Go binaries, missing mounts, network gaps
+4. If approved: `bd close <wisp-id> --reason "approved"` — Duriel can commit
+5. If issues found: `bd update <wisp-id> --status=blocked --append-notes "issues: <exact description>"`
+
+You may review anything outside your own Docker domain. Prefer reviewing Archon's `docker run`
+call (you know exactly what the vessel container needs) or Baal's image requirements.
 
 ## Deliverables
 
@@ -86,7 +99,7 @@ legion/
 - Deleted: {path} — {why}
 
 ## Notes
-{Anything Belial or Duriel should know — build gotchas, image size concerns, env var alignment}
+{Anything the peer reviewer or Duriel should know — build gotchas, image size concerns, env var alignment}
 ```
 
 ## Boundaries

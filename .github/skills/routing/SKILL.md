@@ -17,8 +17,8 @@ metadata:
 | Diablo | Archon Binary Engineer | `diablo.agent.md` | Archon Go binary: pulse/watcher loops, Docker spawning |
 | Baal | Vessel Driver Engineer | `baal.agent.md` | Vessel-driver binary: ACP client, git ops, container entrypoint |
 | Azmodan | Platform/DevOps Engineer | `azmodan.agent.md` | Docker Compose, Dockerfiles, vessel image hierarchy |
-| Belial | Code Reviewer | `belial.agent.md` | Code review against acceptance criteria before any merge |
-| Andariel | QA/Test Engineer | `andariel.agent.md` | Test harness, build validation, bug hunting |
+| Belial | Architecture Reviewer | `belial.agent.md` | On-demand only — high-stakes, cross-cutting, or security-sensitive changes |
+| Andariel | QA/Test Engineer | `andariel.agent.md` | Test harness, build validation, bug hunting; peer reviewer for any domain |
 | Duriel | Scribe | `duriel.agent.md` | Commits, branches, pull requests |
 
 ---
@@ -30,8 +30,9 @@ metadata:
 | archon, pulse loop, watcher loop, docker spawn, controller | Archon Binary Engineer (agent: Diablo) |
 | vessel driver, ACP, JSON-RPC, stdio, acp client, copilot session | Vessel Driver Engineer (agent: Baal) |
 | docker compose, dockerfile, container, image, vessel image, infra | Platform/DevOps Engineer (agent: Azmodan) |
-| review, correctness, spec check, acceptance criteria, quality gate | Code Reviewer (agent: Belial) |
 | test, tests, testing, build validation, go test, vet, coverage | QA/Test Engineer (agent: Andariel) |
+| peer review, review wisp, `review:` wisp | Route to builder who did NOT author the change; Andariel can review any domain |
+| architecture decision, security, breaking change, protocol change | Architecture Reviewer (agent: Belial) — escalation only |
 | commit, PR, branch, push, git, merge | Scribe (agent: Duriel) |
 | lg invoke, lg status, lg log, CLI, lg CLI | Vessel Driver Engineer (agent: Baal) — lg CLI is thin; route to Baal |
 
@@ -40,7 +41,12 @@ metadata:
 ## Default Flow
 
 ```
-Mephisto → Diablo/Baal/Azmodan/Andariel (implementation, parallel where possible) → Belial (review) → Duriel (commit)
+Mephisto → Diablo/Baal/Azmodan/Andariel (parallel where possible)
+         → builder creates `review:` wisp in Beads
+         → Mephisto routes wisp to peer reviewer (not the author)
+         → peer approves (`bd close`) or blocks (`bd update --status=blocked`)
+         → Duriel commits
+         → Belial only on escalation (architecture, security, breaking changes)
 ```
 
 ---
@@ -57,9 +63,9 @@ Mephisto → Diablo/Baal/Azmodan/Andariel (implementation, parallel where possib
 
 | Skill | Who uses it | When to apply |
 |---|---|---|
-| `go-best-practices/` | Diablo, Baal, Andariel, Belial | Any Go implementation or review task |
-| `acp-protocol/` | Baal, Belial | Writing or reviewing ACP client / vessel-driver |
-| `docker-best-practices/` | Azmodan, Belial | Any Dockerfile or docker-compose change |
+| `go-best-practices/` | Diablo, Baal, Andariel | Any Go implementation or peer review task |
+| `acp-protocol/` | Baal | Writing or reviewing ACP client / vessel-driver |
+| `docker-best-practices/` | Azmodan | Any Dockerfile or docker-compose change |
 | `conventional-commits/` | Duriel | Every commit and PR |
 | `git-best-practices/` | Diablo, Baal, Duriel | Branch ops, conflict resolution, push decisions |
 | `github-actions/` | Azmodan, Andariel | Writing or reviewing `.github/workflows/` files |
@@ -72,6 +78,6 @@ Used by Mephisto when spawning tasks via the Copilot CLI.
 
 | Tier | Model | Use for |
 |---|---|---|
-| Fast | `` | Research, exploration, narrow tasks |
-| Standard | `` | Typical implementation and review |
-| Premium | `` | Architecture, high-stakes reasoning |
+| Fast | `gpt-5-mini` | Research, exploration, narrow tasks |
+| Standard | `claude-sonnet-4.5` | Typical implementation and review |
+| Premium | `claude-opus-4.5` | Architecture, high-stakes reasoning |

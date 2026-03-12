@@ -67,7 +67,21 @@ legion/
 3. Implement `internal/acp/client.go` first — clean, minimal, stdlib-only
 4. Implement `cmd/vessel-driver/main.go` — reads env, calls acp, writes Beads, handles exits
 5. Self-review: does every exit path set Beads status correctly? Does the ACP client handle partial reads?
-6. Use the handoff button — Mephisto routes to Belial for review
+6. Create a Beads review wisp: `bd create "review: vessel-driver — <feature>" --type=task --append-notes "<files changed and key decisions>"` — Mephisto routes it to a peer (Diablo or Andariel) on their next turn
+
+## Peer Review
+
+When Mephisto assigns you a `review:` wisp (a Beads task created by Diablo or Azmodan):
+
+1. Read the wisp notes: `bd show <wisp-id> --json` — notes list the changed files and approach
+2. Read every changed file in full — do not skim
+3. Check for: ACP wire format correctness, missing error paths, Beads flag misuse, env var gaps
+4. If approved: `bd close <wisp-id> --reason "approved"` — Duriel can commit
+5. If issues found: `bd update <wisp-id> --status=blocked --append-notes "issues: <exact description>"`
+
+You may review anything outside your own `cmd/vessel-driver/` and `internal/acp/` domain.
+Prefer reviewing Diablo's watcher-loop Beads transitions or Azmodan's vessel image env wiring —
+both touch your domain's contracts directly.
 
 ## Deliverables
 
@@ -90,7 +104,7 @@ legion/
 - Deleted: {path} — {why}
 
 ## Notes
-{Anything Belial or Duriel should know — ACP protocol gotchas, Beads write patterns, open questions}
+{Anything the peer reviewer or Duriel should know — ACP protocol gotchas, Beads write patterns, open questions}
 ```
 
 ## Boundaries

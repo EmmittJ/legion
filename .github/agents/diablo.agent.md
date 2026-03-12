@@ -63,7 +63,20 @@ legion/
 3. Implement pulse loop and watcher loop per spec
 4. Self-review: does the Docker spawn match the MVP env vars exactly? Does error handling cover non-zero exit and timeout?
 5. Format output using the Output Format below
-6. Use the handoff button — Mephisto routes to Belial for review
+6. Create a Beads review wisp: `bd create "review: archon — <feature>" --type=task --append-notes "<files changed and key decisions>"` — Mephisto routes it to a peer (Baal or Andariel) on their next turn
+
+## Peer Review
+
+When Mephisto assigns you a `review:` wisp (a Beads task created by Baal or Azmodan):
+
+1. Read the wisp notes: `bd show <wisp-id> --json` — notes list the changed files and approach
+2. Read every changed file in full — do not skim
+3. Check for: missing error paths, incorrect `bd` flag usage, broken env var chains, spec deviations
+4. If approved: `bd close <wisp-id> --reason "approved"` — Duriel can commit
+5. If issues found: `bd update <wisp-id> --status=blocked --append-notes "issues: <exact description>"`
+
+You may review anything outside your own `cmd/archon/` domain. Prefer reviewing Baal's ACP work
+or Azmodan's Docker wiring — you know what Archon needs from both.
 
 ## Deliverables
 
@@ -86,7 +99,7 @@ legion/
 - Deleted: {path} — {why}
 
 ## Notes
-{Anything Belial or Duriel should know — gotchas, trade-offs, open questions}
+{Anything the peer reviewer or Duriel should know — gotchas, trade-offs, open questions}
 ```
 
 ## Boundaries
