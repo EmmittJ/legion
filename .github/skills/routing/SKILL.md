@@ -53,6 +53,17 @@ Mephisto → Diablo/Baal/Azmodan/Andariel (implementation, parallel where possib
 | 2 | `beads/` | `issue:ready` — surface actionable work |
 | 3 | `beads/` | `inbox:message:read` — check waiting messages from other agents |
 
+## Reference Skills (applied on demand, not at session start)
+
+| Skill | Who uses it | When to apply |
+|---|---|---|
+| `go-best-practices/` | Diablo, Baal, Andariel, Belial | Any Go implementation or review task |
+| `acp-protocol/` | Baal, Belial | Writing or reviewing ACP client / vessel-driver |
+| `docker-best-practices/` | Azmodan, Belial | Any Dockerfile or docker-compose change |
+| `conventional-commits/` | Duriel | Every commit and PR |
+| `git-best-practices/` | Diablo, Baal, Duriel | Branch ops, conflict resolution, push decisions |
+| `github-actions/` | Azmodan, Andariel | Writing or reviewing `.github/workflows/` files |
+
 ---
 
 ## Model Tiers
