@@ -18,6 +18,7 @@ const (
 )
 
 type Client struct {
+	ctx     context.Context
 	cmd     *exec.Cmd
 	stdin   io.WriteCloser
 	scanner *bufio.Scanner
@@ -83,6 +84,7 @@ func New(ctx context.Context, model string) (*Client, error) {
 	}
 
 	c := &Client{
+		ctx:      ctx,
 		cmd:      cmd,
 		stdin:    stdin,
 		scanner:  bufio.NewScanner(stdout),
@@ -202,7 +204,7 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 
 // Initialize sends InitializeRequest and returns the protocol version.
 func (c *Client) Initialize() (int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), defaultRequestTimeout)
+	ctx, cancel := context.WithTimeout(c.ctx, defaultRequestTimeout)
 	defer cancel()
 
 	params := map[string]any{
@@ -228,7 +230,7 @@ func (c *Client) Initialize() (int, error) {
 // NewSession creates a new ACP session and returns the session ID.
 // It drains session/update notifications until session/ready is received.
 func (c *Client) NewSession(cwd string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), defaultRequestTimeout)
+	ctx, cancel := context.WithTimeout(c.ctx, defaultRequestTimeout)
 	defer cancel()
 
 	params := map[string]any{

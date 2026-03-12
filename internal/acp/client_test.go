@@ -125,6 +125,7 @@ func newTestClient(t *testing.T, role string) *Client {
 	}
 
 	c := &Client{
+		ctx:      context.Background(),
 		cmd:      cmd,
 		stdin:    stdin,
 		scanner:  bufio.NewScanner(stdout),
