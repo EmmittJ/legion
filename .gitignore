@@ -8,3 +8,6 @@
 
 # Local environment — contains secrets; never commit
 .env
+
+# Logs (local-only, can be large and not useful to track)
+*.log
