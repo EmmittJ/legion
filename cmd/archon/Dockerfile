@@ -1,5 +1,5 @@
 # Archon — Legion controller binary
-# Multi-stage: golang:1.23-alpine builder → debian:bookworm-slim runtime
+# Multi-stage: golang:1.26-alpine builder → debian:bookworm-slim runtime
 #
 # Build (from repo root):
 #   docker build -f cmd/archon/Dockerfile -t legion/archon:latest .
@@ -8,7 +8,7 @@
 # Archon runs as root (required for /var/run/docker.sock access).
 
 # ── Stage 1: builder ──────────────────────────────────────────────────────────
-FROM golang:1.23-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /build
 
