@@ -67,10 +67,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Initialize the local Beads Dolt database from the GitHub git remote.
-	// This replaces the shared DOLT_DSN model: each vessel carries its own bd
-	// instance seeded from origin.  Must happen before any `bd` command.
-	if err := initBeads(repoURL); err != nil {
+	// Clone the repo first so that /workspace/.beads/metadata.json exists.
+	// bd init --quiet run from inside the clone finds the committed metadata
+	// and wires up to the existing Dolt history via refs/dolt/data — no
+	// "no common ancestor" problem because it's joining existing history, not
+	// creating a new empty DB.
+	if err := runCmd("", "git", "clone", repoURL, "/workspace"); err != nil {
+		slog.Error("git clone failed", "err", err)
+		os.Exit(1)
+	}
+
+	// Initialise Beads from inside the cloned repo. Must happen after clone
+	// (needs .beads/metadata.json) and before telemetry (bd show runs next).
+	if err := initBeads("/workspace"); err != nil {
 		slog.Error("beads init failed", "err", err)
 		os.Exit(1)
 	}
@@ -118,7 +127,7 @@ func main() {
 	_, beadsReadSpan := tracer.Start(ctx, "legion.vessel.beads.read",
 		trace.WithAttributes(attribute.String("issue.id", issueID)),
 	)
-	issue, err := bdShow(issueID)
+	issue, err := bdShow("/workspace", issueID)
 	if err != nil {
 		beadsReadSpan.RecordError(err)
 		beadsReadSpan.SetStatus(codes.Error, err.Error())
@@ -127,22 +136,7 @@ func main() {
 	}
 	beadsReadSpan.End()
 
-	// Step 3: Clone the repo.
-	_, cloneSpan := tracer.Start(ctx, "legion.vessel.git.clone",
-		trace.WithAttributes(attribute.String("repo.url", repoURL)),
-	)
-	if err := runCmd("", "git", "clone", repoURL, "/workspace"); err != nil {
-		cloneSpan.RecordError(err)
-		cloneSpan.SetStatus(codes.Error, err.Error())
-		cloneSpan.End()
-		_ = tw.Write("GIT", fmt.Sprintf("clone failed: %v", err))
-		markFailed(issueID, "git clone failed")
-		die("git clone failed", err)
-	}
-	cloneSpan.End()
-	_ = tw.Write("GIT", fmt.Sprintf("cloned %s to /workspace", repoURL))
-
-	// Step 4: Checkout branch.
+	// Step 3: Checkout branch.
 	branch := "legion/" + issueID
 	_, checkoutSpan := tracer.Start(ctx, "legion.vessel.git.checkout",
 		trace.WithAttributes(attribute.String("git.branch", branch)),
@@ -378,11 +372,10 @@ type issueCore struct {
 	Description string `json:"description"`
 }
 
-// issueDetails is the envelope returned by `bd show <id> --json`.
-// bdShow calls `bd show <id> --json` and parses the result.
+// bdShow calls `bd show <id> --json` from dir and parses the result.
 // bd show returns a single-element flat array: [{"id":"...","title":"...",...}]
-func bdShow(id string) (*issueCore, error) {
-	out, err := execOutput("", "bd", "show", id, "--json")
+func bdShow(dir, id string) (*issueCore, error) {
+	out, err := execOutput(dir, "bd", "show", id, "--json")
 	if err != nil {
 		return nil, err
 	}
@@ -457,53 +450,11 @@ func setupGitCredentials(token string) error {
 	return nil
 }
 
-// initBeads bootstraps the local Beads Dolt database inside the vessel container.
-// Each vessel runs its own bd instance; there is no shared Dolt SQL server.
-//
-// Steps:
-//  1. If /app/.beads/metadata.json already exists the database is already
-//     initialised (e.g. a cached layer) — skip silently.
-//  2. bd init --quiet  — creates the local Dolt database.
-//  3. bd dolt remote add origin <git+https remote>  — wires the GitHub remote.
-//  4. bd dolt pull  — syncs current issues from GitHub (warn-only; a fresh init
-//     with no upstream history is acceptable).
-//
-// The git+https remote URL is derived from repoURL by:
-//   - Stripping a trailing ".git" suffix (if present), then re-appending it to
-//     normalise the form.
-//   - Replacing the "https://" scheme prefix with "git+https://".
-//
-// git auth is already set up by setupGitCredentials before this is called.
-func initBeads(repoURL string) error {
-	const metadataPath = "/app/.beads/metadata.json"
-	if _, err := os.Stat(metadataPath); err == nil {
-		slog.Info("beads already initialised — skipping init", "path", metadataPath)
-		return nil
-	}
-
-	// Derive the git+https remote URL.
-	// e.g. https://github.com/EmmittJ/legion.git  →  git+https://github.com/EmmittJ/legion.git
-	remote := strings.TrimSuffix(repoURL, ".git") + ".git"
-	remote = "git+" + remote // prepend git+ to whatever scheme is present
-	// Guard: only rewrite https:// — if the URL already starts with git+https:// we'd
-	// double-prefix it.  Strip the erroneous double-prefix if it happened.
-	remote = strings.ReplaceAll(remote, "git+git+", "git+")
-
-	// Step 2: bd init
-	if err := runCmd("/app", "bd", "init", "--quiet"); err != nil {
-		return fmt.Errorf("bd init: %w", err)
-	}
-
-	// Step 3: wire the remote
-	if err := runCmd("/app", "bd", "dolt", "remote", "add", "origin", remote); err != nil {
-		return fmt.Errorf("bd dolt remote add origin: %w", err)
-	}
-
-	// Step 4: pull current issues (warn-only — an empty upstream is fine)
-	if err := runCmd("/app", "bd", "dolt", "pull"); err != nil {
-		slog.Warn("bd dolt pull failed — continuing with empty local db", "err", err)
-	}
-
-	slog.Info("beads initialised", "remote", remote)
-	return nil
+// initBeads runs `bd init --quiet` from inside the cloned repo at dir.
+// .beads/metadata.json is committed to the repo, so bd init finds it and
+// connects to the existing Dolt history via refs/dolt/data on the remote —
+// no "no common ancestor" error because it joins existing history rather than
+// creating a new empty DB.
+func initBeads(dir string) error {
+	return runCmd(dir, "bd", "init", "--quiet")
 }
