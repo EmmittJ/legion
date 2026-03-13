@@ -26,7 +26,7 @@ FROM debian:bookworm-slim
 
 # Install runtime deps: curl+ca-certs for bd download; bd itself for Beads CLI calls
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates tar \
+    && apt-get install -y --no-install-recommends curl ca-certificates tar git \
     && rm -rf /var/lib/apt/lists/*
 
 # Beads CLI — Archon shells out to bd for issue lifecycle management
@@ -46,4 +46,9 @@ COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 # Static binary — the only application process in the container
 COPY --from=builder /build/archon /archon
 
-ENTRYPOINT ["/archon"]
+WORKDIR /app
+
+# Entrypoint: initialize bd against the Dolt SQL server, then run archon
+COPY --chmod=755 cmd/archon/entrypoint.sh /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
