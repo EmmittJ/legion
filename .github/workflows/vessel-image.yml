@@ -33,6 +33,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Compute lowercase image name
+        run: echo "IMAGE=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')/vessel-copilot" >> $GITHUB_ENV
+
       - name: Build and push vessel image
         uses: docker/build-push-action@v5
         with:
@@ -40,5 +43,5 @@ jobs:
           file: Dockerfile.vessel-copilot
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}/vessel-copilot:latest
-            ghcr.io/${{ github.repository }}/vessel-copilot:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
