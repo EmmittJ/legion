@@ -86,7 +86,7 @@ func cmdStatus() {
 	var allIssues []issueCore
 
 	for _, status := range []string{"open", "in_progress"} {
-		out, err := bdOutput("list", "--status="+status, "--json")
+		out, err := bdOutput("list", "--status="+status, "--flat", "--json")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "lg status: bd list --status=%s: %v\n", status, err)
 			continue
@@ -239,7 +239,7 @@ func cmdWatch() {
 	// On any error it returns nil, signalling the section should show
 	// "(unavailable)".
 	fetchIssues := func(status string) ([]issueCore, bool) {
-		out, err := bdOutput("list", "--status="+status, "--json")
+		out, err := bdOutput("list", "--status="+status, "--flat", "--json")
 		if err != nil {
 			return nil, false
 		}

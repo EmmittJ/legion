@@ -7,7 +7,7 @@
 *.exe
 
 # Compiled Go binaries
-vessel-driver
+/vessel-driver
 
 # Local environment — contains secrets; never commit
 .env

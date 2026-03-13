@@ -12,13 +12,10 @@ import (
 	"strings"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	promexporter "go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/metric"
-	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -66,13 +63,16 @@ func Setup(ctx context.Context, serviceName string) (
 		endpoint = "http://localhost:4318"
 	}
 
+	fmt.Fprintf(os.Stderr, "[TELEMETRY-DEBUG] Building trace opts for endpoint: %s\n", endpoint)
 	traceOpts, parseErr := buildTraceOpts(endpoint)
 	if parseErr != nil {
 		slog.Warn("OTLP endpoint parse error, using noop tracer",
 			"endpoint", endpoint, "err", parseErr)
 		tracer = trace.NewNoopTracerProvider().Tracer(serviceName)
 	} else {
+		fmt.Fprintf(os.Stderr, "[TELEMETRY-DEBUG] Creating OTLP trace exporter...\n")
 		traceExp, traceErr := otlptracehttp.New(ctx, traceOpts...)
+		fmt.Fprintf(os.Stderr, "[TELEMETRY-DEBUG] OTLP trace exporter created: err=%v\n", traceErr)
 		if traceErr != nil {
 			slog.Warn("OTLP trace exporter init failed, using noop tracer", "err", traceErr)
 			tracer = trace.NewNoopTracerProvider().Tracer(serviceName)
@@ -110,28 +110,13 @@ func Setup(ctx context.Context, serviceName string) (
 	mux = http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 
-	// ── Log provider (OTLP HTTP → OTel Collector → Loki) ─────────────────────
-	// Non-fatal: if this fails slog keeps writing JSON to stderr unchanged.
-	logOpts, logParseErr := buildLogOpts(endpoint)
-	if logParseErr != nil {
-		slog.Warn("OTLP log endpoint parse error — logs will not be exported", "err", logParseErr)
-	} else {
-		logExp, logExpErr := otlploghttp.New(ctx, logOpts...)
-		if logExpErr != nil {
-			slog.Warn("otel log exporter init failed — logs will not be exported", "err", logExpErr)
-		} else {
-			lp := sdklog.NewLoggerProvider(
-				sdklog.WithResource(res),
-				sdklog.WithProcessor(sdklog.NewBatchProcessor(logExp)),
-			)
-			// Bridge: slog → OTel log provider (exported to Loki via collector).
-			// Option 1 (simple): route all slog calls through the OTel handler only.
-			// Local visibility is preserved via the OTel collector's stdout exporter.
-			otelHandler := otelslog.NewHandler(serviceName, otelslog.WithLoggerProvider(lp))
-			slog.SetDefault(slog.New(otelHandler))
-			shutdowns = append(shutdowns, lp.Shutdown)
-		}
-	}
+	// ── Log provider (TEMPORARILY DISABLED) ──────────────────────────────────
+	// BLOCKED: OTel log batch processor buffers logs asynchronously, causing
+	// startup logs and other critical diagnostics to disappear from stderr before
+	// they're flushed. This needs a fix: switch to sync processor OR add explicit
+	// flush after critical operations. For MVP, slog writes JSON directly to stderr
+	// (configured above), which preserves all logs in real-time.
+	// TODO(diablo): Re-enable with sync processor or per-message flush.
 
 	shutdown = buildShutdown(shutdowns)
 	return tracer, meter, mux, shutdown, nil
@@ -154,26 +139,7 @@ func buildShutdown(fns []func(context.Context) error) func(context.Context) erro
 	}
 }
 
-// buildLogOpts converts an OTLP endpoint URL into otlploghttp options.
-// Scheme determines TLS: http → WithInsecure(), https → default TLS.
-func buildLogOpts(endpoint string) ([]otlploghttp.Option, error) {
-	u, err := url.Parse(endpoint)
-	if err != nil {
-		return nil, fmt.Errorf("parse %q: %w", endpoint, err)
-	}
-	opts := []otlploghttp.Option{
-		otlploghttp.WithEndpoint(u.Host),
-	}
-	if u.Scheme == "http" {
-		opts = append(opts, otlploghttp.WithInsecure())
-	}
-	if p := u.Path; p != "" && p != "/" {
-		opts = append(opts, otlploghttp.WithURLPath(p))
-	}
-	return opts, nil
-}
-
-// buildTraceOptsconverts an OTLP endpoint URL into otlptracehttp options.
+// buildTraceOpts converts an OTLP endpoint URL into otlptracehttp options.
 // Scheme determines TLS: http → WithInsecure(), https → default TLS.
 func buildTraceOpts(endpoint string) ([]otlptracehttp.Option, error) {
 	u, err := url.Parse(endpoint)

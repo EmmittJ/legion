@@ -20,6 +20,39 @@ import (
 	"github.com/EmmittJ/legion/internal/telemetry"
 )
 
+// TraceWriter writes structured execution traces to Beads issue notes.
+// Each trace is timestamped and appended to preserve history.
+type TraceWriter struct {
+	issueID string
+}
+
+// NewTraceWriter creates a trace writer for the given issue.
+func NewTraceWriter(issueID string) *TraceWriter {
+	return &TraceWriter{issueID: issueID}
+}
+
+// Write appends a formatted trace event to the Beads issue.
+// Format: [TIMESTAMP] <component>: <message>
+func (tw *TraceWriter) Write(component, message string) error {
+	timestamp := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	trace := fmt.Sprintf("[%s] %s: %s", timestamp, component, message)
+	return runCmd("", "bd", "update", tw.issueID, "--append-notes", trace)
+}
+
+// WriteJSON appends a structured JSON trace event to the Beads issue.
+// Useful for capturing rich context (ACP messages, git output, etc).
+func (tw *TraceWriter) WriteJSON(component string, data map[string]any) error {
+	timestamp := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	data["timestamp"] = timestamp
+	data["component"] = component
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	trace := string(raw)
+	return runCmd("", "bd", "update", tw.issueID, "--append-notes", trace)
+}
+
 func main() {
 	// Read required env vars first — these fatal before any spans exist,
 	// which is acceptable: there is nothing meaningful to trace yet.
@@ -30,6 +63,9 @@ func main() {
 	model := os.Getenv("VESSEL_MODEL")
 
 	ctx := context.Background()
+
+	// Trace writer for appending execution events to Beads issue notes.
+	tw := NewTraceWriter(issueID)
 
 	// Initialize telemetry. Non-fatal: a noop tracer/meter is returned on
 	// failure so the rest of the binary continues without distributed tracing.
@@ -86,10 +122,12 @@ func main() {
 		cloneSpan.RecordError(err)
 		cloneSpan.SetStatus(codes.Error, err.Error())
 		cloneSpan.End()
+		_ = tw.Write("GIT", fmt.Sprintf("clone failed: %v", err))
 		markFailed(issueID, "git clone failed")
 		die("git clone failed", err)
 	}
 	cloneSpan.End()
+	_ = tw.Write("GIT", fmt.Sprintf("cloned %s to /workspace", repoURL))
 
 	// Step 4: Checkout branch.
 	branch := "legion/" + issueID
@@ -100,10 +138,12 @@ func main() {
 		checkoutSpan.RecordError(err)
 		checkoutSpan.SetStatus(codes.Error, err.Error())
 		checkoutSpan.End()
+		_ = tw.Write("GIT", fmt.Sprintf("checkout failed: %v", err))
 		markFailed(issueID, "checkout failed")
 		die("git checkout failed", err)
 	}
 	checkoutSpan.End()
+	_ = tw.Write("GIT", fmt.Sprintf("checked out branch %s", branch))
 
 	// Steps 5+6: Start ACP server and perform protocol handshake.
 	_, acpInitSpan := tracer.Start(ctx, "legion.vessel.acp.initialize",
@@ -114,6 +154,7 @@ func main() {
 		acpInitSpan.RecordError(err)
 		acpInitSpan.SetStatus(codes.Error, err.Error())
 		acpInitSpan.End()
+		_ = tw.Write("ACP", fmt.Sprintf("start failed: %v", err))
 		markFailed(issueID, "ACP start failed")
 		die("acp.New failed", err)
 	}
@@ -124,11 +165,17 @@ func main() {
 		acpInitSpan.RecordError(err)
 		acpInitSpan.SetStatus(codes.Error, err.Error())
 		acpInitSpan.End()
+		_ = tw.Write("ACP", fmt.Sprintf("initialize handshake failed: %v", err))
 		markFailed(issueID, "ACP error")
 		die("acp.Initialize failed", err)
 	}
 	acpInitSpan.End()
 	slog.InfoContext(ctx, "ACP handshake OK", "protocol_version", protocolVersion)
+	_ = tw.WriteJSON("ACP", map[string]any{
+		"event": "initialize",
+		"protocol_version": protocolVersion,
+		"status": "ok",
+	})
 
 	// Step 7: New session.
 	_, acpSessionSpan := tracer.Start(ctx, "legion.vessel.acp.session")
@@ -137,11 +184,18 @@ func main() {
 		acpSessionSpan.RecordError(err)
 		acpSessionSpan.SetStatus(codes.Error, err.Error())
 		acpSessionSpan.End()
+		_ = tw.Write("ACP", fmt.Sprintf("new session failed: %v", err))
 		markFailed(issueID, "ACP error")
 		die("acp.NewSession failed", err)
 	}
 	acpSessionSpan.End()
 	slog.InfoContext(ctx, "ACP session ready", "session_id", sessionID)
+	_ = tw.WriteJSON("ACP", map[string]any{
+		"event": "session/new",
+		"session_id": sessionID,
+		"cwd": "/workspace",
+		"status": "ready",
+	})
 
 	// Step 8: Prompt with issue content.
 	promptContent := issue.Title + "\n\n" + issue.Description
@@ -149,6 +203,13 @@ func main() {
 	_, acpPromptSpan := tracer.Start(ctx, "legion.vessel.acp.prompt",
 		trace.WithAttributes(attribute.String("model", model)),
 	)
+
+	// Write the prompt to Beads for visibility.
+	_ = tw.WriteJSON("ACP", map[string]any{
+		"event": "prompt/request",
+		"user_message": promptContent,
+		"session_id": sessionID,
+	})
 
 	onUpdate := func(update map[string]any) {
 		raw, marshalErr := json.Marshal(update)
@@ -189,12 +250,22 @@ func main() {
 		acpPromptSpan.RecordError(promptErr)
 		acpPromptSpan.SetStatus(codes.Error, promptErr.Error())
 		acpPromptSpan.End()
+		_ = tw.WriteJSON("ACP", map[string]any{
+			"event": "prompt/error",
+			"error": promptErr.Error(),
+			"stop_reason": stopReason,
+		})
 		markFailed(issueID, "ACP error")
 		die("prompt failed", promptErr)
 	}
 	acpPromptSpan.SetStatus(codes.Ok, "")
 	acpPromptSpan.End()
 	slog.InfoContext(ctx, "prompt complete", "stop_reason", stopReason)
+	_ = tw.WriteJSON("ACP", map[string]any{
+		"event": "prompt/response",
+		"stop_reason": stopReason,
+		"status": "ok",
+	})
 
 	// Steps 9a–9c: git add + commit + push.
 	_, pushSpan := tracer.Start(ctx, "legion.vessel.git.push",
@@ -206,9 +277,11 @@ func main() {
 		pushSpan.RecordError(err)
 		pushSpan.SetStatus(codes.Error, err.Error())
 		pushSpan.End()
+		_ = tw.Write("GIT", fmt.Sprintf("add failed: %v", err))
 		markFailed(issueID, "git add failed")
 		die("git add failed", err)
 	}
+	_ = tw.Write("GIT", "staged all changes")
 
 	// Step 9b: git commit.
 	commitMsg := fmt.Sprintf("feat(%s): %s", issueID, issue.Title)
@@ -221,9 +294,11 @@ func main() {
 		pushSpan.RecordError(err)
 		pushSpan.SetStatus(codes.Error, err.Error())
 		pushSpan.End()
+		_ = tw.Write("GIT", fmt.Sprintf("commit failed: %v", err))
 		markFailed(issueID, "git commit failed")
 		die("git commit failed", err)
 	}
+	_ = tw.Write("GIT", fmt.Sprintf("committed: %s", commitMsg))
 
 	// Step 9c: git push.
 	// Inject token into the origin remote URL so the push authenticates without
@@ -233,6 +308,7 @@ func main() {
 		pushSpan.RecordError(err)
 		pushSpan.SetStatus(codes.Error, err.Error())
 		pushSpan.End()
+		_ = tw.Write("GIT", fmt.Sprintf("build push URL failed: %v", err))
 		markFailed(issueID, "git push failed")
 		die("build push URL failed", err)
 	}
@@ -240,6 +316,7 @@ func main() {
 		pushSpan.RecordError(err)
 		pushSpan.SetStatus(codes.Error, err.Error())
 		pushSpan.End()
+		_ = tw.Write("GIT", fmt.Sprintf("remote set-url failed: %v", err))
 		markFailed(issueID, "git push failed")
 		die("git remote set-url failed", err)
 	}
@@ -247,15 +324,27 @@ func main() {
 		pushSpan.RecordError(err)
 		pushSpan.SetStatus(codes.Error, err.Error())
 		pushSpan.End()
+		_ = tw.Write("GIT", fmt.Sprintf("push failed: %v", err))
 		markFailed(issueID, "git push failed")
 		die("git push failed", err)
 	}
 	pushSpan.End()
+	_ = tw.Write("GIT", fmt.Sprintf("pushed branch %s to origin", branch))
 
 	// Step 9d: close the issue.
 	_, beadsCloseSpan := tracer.Start(ctx, "legion.vessel.beads.close",
 		trace.WithAttributes(attribute.String("issue.id", issueID)),
 	)
+	
+	// Write final success status
+	_ = tw.WriteJSON("VESSEL", map[string]any{
+		"event": "completion",
+		"status": "success",
+		"branch": branch,
+		"stop_reason": stopReason,
+		"message": "vessel-driver execution completed successfully",
+	})
+	
 	if err := runCmd("", "bd", "close", issueID, "--reason", "completed"); err != nil {
 		beadsCloseSpan.RecordError(err)
 		beadsCloseSpan.SetStatus(codes.Error, err.Error())
@@ -293,27 +382,27 @@ type issueCore struct {
 }
 
 // issueDetails is the envelope returned by `bd show <id> --json`.
-type issueDetails struct {
-	Issue issueCore `json:"issue"`
-}
-
 // bdShow calls `bd show <id> --json` and parses the result.
+// bd show returns a single-element flat array: [{"id":"...","title":"...",...}]
 func bdShow(id string) (*issueCore, error) {
 	out, err := execOutput("", "bd", "show", id, "--json")
 	if err != nil {
 		return nil, err
 	}
-	var env issueDetails
-	if err := json.Unmarshal(out, &env); err != nil {
+	var items []issueCore
+	if err := json.Unmarshal(out, &items); err != nil {
 		return nil, fmt.Errorf("bd show: parse JSON: %w", err)
 	}
-	return &env.Issue, nil
+	if len(items) == 0 {
+		return nil, fmt.Errorf("bd show: empty result")
+	}
+	return &items[0], nil
 }
 
-// markFailed marks an issue as blocked with a reason. Errors are logged but not fatal.
+// markFailed marks an issue as failed with a reason. Errors are logged but not fatal.
 func markFailed(issueID, reason string) {
-	if err := runCmd("", "bd", "update", issueID, "--status=blocked", "--append-notes="+reason); err != nil {
-		slog.Warn("could not mark issue blocked", "issue_id", issueID, "err", err)
+	if err := runCmd("", "bd", "update", issueID, "--status=failed", "--append-notes="+reason); err != nil {
+		slog.Warn("could not mark issue failed", "issue_id", issueID, "err", err)
 	}
 }
 

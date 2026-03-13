@@ -11,6 +11,25 @@
 #   REPO_URL=https://github.com/owner/repo GITHUB_TOKEN=ghp_xxx docker compose up
 
 services:
+  dolt:
+    image: dolthub/dolt-sql-server:latest
+    ports:
+      - "3306:3306"
+    environment:
+      - DOLT_SQL_SERVER_PORT=3306
+    volumes:
+      - dolt-data:/var/lib/dolt
+      - ./dolt-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "dolt", "sql", "--query", "SELECT 1;"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - legion-net
+
   archon:
     build:
       context: .
@@ -23,11 +42,17 @@ services:
       - VESSEL_MODEL=${VESSEL_MODEL:-gpt-5-mini}
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
       - OTEL_SERVICE_NAME=legion.archon
+      - DOLT_DSN=mysql://root@dolt:3306/beads
+      - BEADS_DOLT_SERVER_HOST=dolt
+      - BEADS_DOLT_SERVER_PORT=3306
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
     depends_on:
-      - otel-collector
+      dolt:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
     networks:
       - legion-net
 
@@ -39,6 +64,7 @@ services:
     ports:
       - "4318:4318"   # OTLP HTTP (from binaries on host)
       - "4317:4317"   # OTLP gRPC
+      - "13133:13133" # Health check endpoint
     depends_on:
       - tempo
       - loki
@@ -46,7 +72,7 @@ services:
       - legion-net
 
   tempo:
-    image: grafana/tempo:latest
+    image: grafana/tempo:2.10.2
     command: ["-config.file=/etc/tempo.yaml"]
     volumes:
       - ./observability/tempo.yaml:/etc/tempo.yaml:ro
@@ -82,7 +108,7 @@ services:
   grafana:
     image: grafana/grafana:latest
     ports:
-      - "3000:3000"
+      - "3300:3000"
     environment:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
@@ -102,6 +128,7 @@ networks:
     driver: bridge
 
 volumes:
+  dolt-data:
   tempo-data:
   loki-data:
   grafana-data:

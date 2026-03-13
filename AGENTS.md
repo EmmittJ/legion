@@ -23,6 +23,7 @@
 4. **Beads is the source of truth.** All work is tracked as Beads issues. `bd ready` before planning anything.
 5. **One logical change per commit.** Duriel does not bundle unrelated work.
 6. **The `lg` CLI is the human interface.** `bd` is for the team. `lg` is for humans.
+7. **Documentation lives in `docs/`.** User-facing guides, architecture docs, setup guides → `docs/*.md`. No transient markdown files, no temporary planning docs in the repo root.
 
 ## Skills
 

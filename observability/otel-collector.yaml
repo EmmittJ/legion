@@ -6,6 +6,10 @@ receivers:
       http:
         endpoint: 0.0.0.0:4318
 
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
 processors:
   batch:
 
@@ -14,24 +18,16 @@ exporters:
     endpoint: tempo:4317
     tls:
       insecure: true
-  loki:
-    endpoint: http://loki:3100/loki/api/v1/push
-    default_labels_enabled:
-      exporter: false
-      job: true
   prometheusremotewrite:
     endpoint: http://prometheus:9090/api/v1/write
 
 service:
+  extensions: [health_check]
   pipelines:
     traces:
       receivers: [otlp]
       processors: [batch]
       exporters: [otlp/tempo]
-    logs:
-      receivers: [otlp]
-      processors: [batch]
-      exporters: [loki]
     metrics:
       receivers: [otlp]
       processors: [batch]

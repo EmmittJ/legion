@@ -193,7 +193,7 @@ func spawnVessel(ctx context.Context, cfg config, issueID, name string, o *obs) 
 		"docker", "run",
 		"--detach",
 		"--name", name,
-		"--network=legion-net",
+		"--network=legion_legion-net",
 		"-e", "ISSUE_ID="+issueID,
 		"-e", "BEADS_DOLT_SERVER_HOST="+cfg.doltHost,
 		"-e", "BEADS_DOLT_SERVER_PORT="+cfg.doltPort,

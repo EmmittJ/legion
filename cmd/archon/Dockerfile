@@ -8,7 +8,7 @@
 # Archon runs as root (required for /var/run/docker.sock access).
 
 # ── Stage 1: builder ──────────────────────────────────────────────────────────
-FROM golang:1.21-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /build
 
@@ -25,8 +25,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o archon ./cmd/archon
 FROM debian:bookworm-slim
 
 # Install runtime deps: curl+ca-certs for bd download; bd itself for Beads CLI calls
+# default-mysql-client for Dolt server connectivity checks during entrypoint initialization
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates tar git \
+    && apt-get install -y --no-install-recommends curl ca-certificates tar git default-mysql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Beads CLI — Archon shells out to bd for issue lifecycle management

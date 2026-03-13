@@ -39,6 +39,8 @@ Operator          lg CLI               Beads (Dolt)          Archon
 | Initialized Beads repo | Run `bd init` in your repo before starting Legion. |
 | Git | Available inside vessel containers and on the host for reviewing results. |
 
+**Windows users:** See [**WSL Setup Guide**](docs/SETUP-WSL.md) for instructions on running the test harness in Windows Subsystem for Linux (WSL2).
+
 ---
 
 ## Quick Start
@@ -110,6 +112,26 @@ docker compose build
 ```
 
 `lg` can be run directly from the host — it only needs `bd` on `PATH`.
+
+---
+
+## Troubleshooting & Container Logs
+
+During MVP testing, view container logs to debug Archon, Dolt, or vessel issues:
+
+```bash
+# All services
+docker compose logs -f
+
+# Specific service
+docker compose logs -f archon
+docker compose logs -f dolt
+
+# Common errors
+docker compose logs archon | grep -i error
+```
+
+For detailed debugging guide, health checks, and error patterns, see [**`docs/TROUBLESHOOTING.md`**](docs/TROUBLESHOOTING.md).
 
 ---
 
