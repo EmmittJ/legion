@@ -40,6 +40,18 @@ RUN set -eux; \
     && chmod +x /usr/local/bin/bd \
     && rm -f /tmp/beads.tar.gz; true
 
+# Dolt — bd init auto-starts dolt as a subprocess; must be present in PATH
+RUN set -eux; \
+    DOLT_VER=$(curl -fsSL https://api.github.com/repos/dolthub/dolt/releases/latest \
+        | grep '"tag_name"' | sed 's/.*"v\([^"]*\)".*/\1/'); \
+    curl -fsSL "https://github.com/dolthub/dolt/releases/download/v${DOLT_VER}/dolt-linux-amd64.tar.gz" \
+        -o /tmp/dolt.tar.gz \
+    && mkdir -p /tmp/dolt-extract \
+    && tar -xzf /tmp/dolt.tar.gz -C /tmp/dolt-extract \
+    && find /tmp/dolt-extract -type f -name 'dolt' -exec mv {} /usr/local/bin/dolt \; \
+    && chmod +x /usr/local/bin/dolt \
+    && rm -rf /tmp/dolt.tar.gz /tmp/dolt-extract
+
 # Docker CLI — Archon shells out to docker run/stop/rm for vessel lifecycle
 RUN set -eux; \
     curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-27.5.1.tgz" \
