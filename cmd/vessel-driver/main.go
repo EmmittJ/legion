@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/url"
 	"os"
 	"os/exec"
@@ -12,78 +12,163 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/EmmittJ/legion/internal/acp"
+	"github.com/EmmittJ/legion/internal/telemetry"
 )
 
 func main() {
+	// Read required env vars first — these fatal before any spans exist,
+	// which is acceptable: there is nothing meaningful to trace yet.
 	issueID := requireEnv("ISSUE_ID")
 	repoURL := requireEnv("REPO_URL")
 	githubToken := requireEnv("GITHUB_TOKEN")
 	_ = requireEnv("DOLT_DSN") // validated at startup; used implicitly by bd CLI
-
-	// Step 2: Read issue from Beads.
-	issue, err := bdShow(issueID)
-	if err != nil {
-		log.Fatalf("vessel-driver: bd show %s: %v", issueID, err)
-	}
-
-	// Step 3: Clone the repo.
-	if err := runCmd("", "git", "clone", repoURL, "/workspace"); err != nil {
-		markFailed(issueID, "git clone failed")
-		log.Fatalf("vessel-driver: git clone: %v", err)
-	}
-
-	// Step 4: Checkout branch.
-	branch := "legion/" + issueID
-	if err := runCmd("/workspace", "git", "checkout", "-b", branch); err != nil {
-		markFailed(issueID, "checkout failed")
-		log.Fatalf("vessel-driver: git checkout: %v", err)
-	}
+	model := os.Getenv("VESSEL_MODEL")
 
 	ctx := context.Background()
 
-	// Step 5: Start ACP server.
-	model := os.Getenv("VESSEL_MODEL")
+	// Initialize telemetry. Non-fatal: a noop tracer/meter is returned on
+	// failure so the rest of the binary continues without distributed tracing.
+	tracer, _, _, shutdown, err := telemetry.Setup(ctx, "legion.vessel-driver")
+	if err != nil {
+		slog.Error("telemetry setup failed", "err", err)
+		// non-fatal — continue
+	}
+	// IMPORTANT: vessel-driver is short-lived. This defer is the only
+	// mechanism that flushes buffered spans to Jaeger before exit.
+	// os.Exit bypasses defers, so the die() helper below calls shutdown
+	// explicitly on every fatal error path.
+	defer func() { _ = shutdown(ctx) }()
+
+	// Root span covering the entire vessel lifecycle.
+	ctx, rootSpan := tracer.Start(ctx, "legion.vessel.run",
+		trace.WithAttributes(
+			attribute.String("issue.id", issueID),
+			attribute.String("repo.url", repoURL),
+		),
+	)
+	defer rootSpan.End()
+
+	// die records the error on the root span, flushes telemetry, and exits 1.
+	// It must be called instead of log.Fatalf/os.Exit on every fatal path
+	// reached after this point, because os.Exit bypasses all defers.
+	die := func(msg string, fatalErr error) {
+		rootSpan.RecordError(fatalErr)
+		rootSpan.SetStatus(codes.Error, msg)
+		rootSpan.End()
+		slog.ErrorContext(ctx, msg, "err", fatalErr)
+		_ = shutdown(ctx)
+		os.Exit(1)
+	}
+
+	// Step 2: Read issue from Beads.
+	_, beadsReadSpan := tracer.Start(ctx, "legion.vessel.beads.read",
+		trace.WithAttributes(attribute.String("issue.id", issueID)),
+	)
+	issue, err := bdShow(issueID)
+	if err != nil {
+		beadsReadSpan.RecordError(err)
+		beadsReadSpan.SetStatus(codes.Error, err.Error())
+		beadsReadSpan.End()
+		die(fmt.Sprintf("bd show %s failed", issueID), err)
+	}
+	beadsReadSpan.End()
+
+	// Step 3: Clone the repo.
+	_, cloneSpan := tracer.Start(ctx, "legion.vessel.git.clone",
+		trace.WithAttributes(attribute.String("repo.url", repoURL)),
+	)
+	if err := runCmd("", "git", "clone", repoURL, "/workspace"); err != nil {
+		cloneSpan.RecordError(err)
+		cloneSpan.SetStatus(codes.Error, err.Error())
+		cloneSpan.End()
+		markFailed(issueID, "git clone failed")
+		die("git clone failed", err)
+	}
+	cloneSpan.End()
+
+	// Step 4: Checkout branch.
+	branch := "legion/" + issueID
+	_, checkoutSpan := tracer.Start(ctx, "legion.vessel.git.checkout",
+		trace.WithAttributes(attribute.String("git.branch", branch)),
+	)
+	if err := runCmd("/workspace", "git", "checkout", "-b", branch); err != nil {
+		checkoutSpan.RecordError(err)
+		checkoutSpan.SetStatus(codes.Error, err.Error())
+		checkoutSpan.End()
+		markFailed(issueID, "checkout failed")
+		die("git checkout failed", err)
+	}
+	checkoutSpan.End()
+
+	// Steps 5+6: Start ACP server and perform protocol handshake.
+	_, acpInitSpan := tracer.Start(ctx, "legion.vessel.acp.initialize",
+		trace.WithAttributes(attribute.String("model", model)),
+	)
 	client, err := acp.New(ctx, model)
 	if err != nil {
+		acpInitSpan.RecordError(err)
+		acpInitSpan.SetStatus(codes.Error, err.Error())
+		acpInitSpan.End()
 		markFailed(issueID, "ACP start failed")
-		log.Fatalf("vessel-driver: acp.New: %v", err)
+		die("acp.New failed", err)
 	}
 	defer client.Close()
 
-	// Step 6: Initialize.
 	protocolVersion, err := client.Initialize()
 	if err != nil {
+		acpInitSpan.RecordError(err)
+		acpInitSpan.SetStatus(codes.Error, err.Error())
+		acpInitSpan.End()
 		markFailed(issueID, "ACP error")
-		log.Fatalf("vessel-driver: acp.Initialize: %v", err)
+		die("acp.Initialize failed", err)
 	}
-	log.Printf("vessel-driver: ACP handshake OK — protocol version %d", protocolVersion)
+	acpInitSpan.End()
+	slog.InfoContext(ctx, "ACP handshake OK", "protocol_version", protocolVersion)
 
 	// Step 7: New session.
+	_, acpSessionSpan := tracer.Start(ctx, "legion.vessel.acp.session")
 	sessionID, err := client.NewSession("/workspace")
 	if err != nil {
+		acpSessionSpan.RecordError(err)
+		acpSessionSpan.SetStatus(codes.Error, err.Error())
+		acpSessionSpan.End()
 		markFailed(issueID, "ACP error")
-		log.Fatalf("vessel-driver: acp.NewSession: %v", err)
+		die("acp.NewSession failed", err)
 	}
-	log.Printf("vessel-driver: session %s ready", sessionID)
+	acpSessionSpan.End()
+	slog.InfoContext(ctx, "ACP session ready", "session_id", sessionID)
 
 	// Step 8: Prompt with issue content.
 	promptContent := issue.Title + "\n\n" + issue.Description
 
+	_, acpPromptSpan := tracer.Start(ctx, "legion.vessel.acp.prompt",
+		trace.WithAttributes(attribute.String("model", model)),
+	)
+
 	onUpdate := func(update map[string]any) {
-		raw, err := json.Marshal(update)
-		if err != nil {
+		raw, marshalErr := json.Marshal(update)
+		if marshalErr != nil {
 			return
 		}
 		note := string(raw)
 		// Best-effort — don't fail the whole operation if a trace write fails.
 		_ = runCmd("", "bd", "update", issueID, "--append-notes", note)
+
+		// Also record as a span event for trace visibility in Jaeger.
+		acpPromptSpan.AddEvent("acp.update", trace.WithAttributes(
+			attribute.String("type", fmt.Sprintf("%v", update["type"])),
+		))
 	}
 
 	// Determine prompt timeout — default 45 min, overrideable via VESSEL_TIMEOUT (seconds).
 	timeoutSecs := 2700
 	if v := os.Getenv("VESSEL_TIMEOUT"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
+		if n, parseErr := strconv.Atoi(v); parseErr == nil {
 			timeoutSecs = n
 		}
 	}
@@ -91,23 +176,38 @@ func main() {
 	defer cancel()
 	stopReason, err := client.Prompt(promptCtx, sessionID, promptContent, onUpdate)
 
-	// Step 9/10: Handle completion.
+	// Step 9/10: Handle prompt completion.
 	if err != nil || stopReason == "error" {
+		var promptErr error
 		if err != nil {
-			log.Printf("vessel-driver: prompt error: %v", err)
+			promptErr = err
+			slog.ErrorContext(ctx, "prompt error", "err", err)
 		} else {
-			log.Printf("vessel-driver: prompt stopped with error reason")
+			promptErr = fmt.Errorf("stop reason: %s", stopReason)
+			slog.ErrorContext(ctx, "prompt stopped with error reason", "stop_reason", stopReason)
 		}
+		acpPromptSpan.RecordError(promptErr)
+		acpPromptSpan.SetStatus(codes.Error, promptErr.Error())
+		acpPromptSpan.End()
 		markFailed(issueID, "ACP error")
-		os.Exit(1)
+		die("prompt failed", promptErr)
 	}
+	acpPromptSpan.SetStatus(codes.Ok, "")
+	acpPromptSpan.End()
+	slog.InfoContext(ctx, "prompt complete", "stop_reason", stopReason)
 
-	log.Printf("vessel-driver: prompt complete — stop reason: %s", stopReason)
+	// Steps 9a–9c: git add + commit + push.
+	_, pushSpan := tracer.Start(ctx, "legion.vessel.git.push",
+		trace.WithAttributes(attribute.String("git.branch", branch)),
+	)
 
 	// Step 9a: git add -A.
 	if err := runCmd("/workspace", "git", "add", "-A"); err != nil {
+		pushSpan.RecordError(err)
+		pushSpan.SetStatus(codes.Error, err.Error())
+		pushSpan.End()
 		markFailed(issueID, "git add failed")
-		log.Fatalf("vessel-driver: git add: %v", err)
+		die("git add failed", err)
 	}
 
 	// Step 9b: git commit.
@@ -118,8 +218,11 @@ func main() {
 		"-c", "user.name=Vessel",
 		"commit", "-m", commitMsg,
 	); err != nil {
+		pushSpan.RecordError(err)
+		pushSpan.SetStatus(codes.Error, err.Error())
+		pushSpan.End()
 		markFailed(issueID, "git commit failed")
-		log.Fatalf("vessel-driver: git commit: %v", err)
+		die("git commit failed", err)
 	}
 
 	// Step 9c: git push.
@@ -127,32 +230,57 @@ func main() {
 	// exposing the credential as a command-line argument (visible in `ps aux`).
 	pushURL, err := buildPushURL(repoURL, githubToken)
 	if err != nil {
+		pushSpan.RecordError(err)
+		pushSpan.SetStatus(codes.Error, err.Error())
+		pushSpan.End()
 		markFailed(issueID, "git push failed")
-		log.Fatalf("vessel-driver: build push URL: %v", err)
+		die("build push URL failed", err)
 	}
 	if err := runCmd("/workspace", "git", "remote", "set-url", "origin", pushURL); err != nil {
+		pushSpan.RecordError(err)
+		pushSpan.SetStatus(codes.Error, err.Error())
+		pushSpan.End()
 		markFailed(issueID, "git push failed")
-		log.Fatalf("vessel-driver: git remote set-url: %v", err)
+		die("git remote set-url failed", err)
 	}
 	if err := runCmd("/workspace", "git", "push", "origin", branch); err != nil {
+		pushSpan.RecordError(err)
+		pushSpan.SetStatus(codes.Error, err.Error())
+		pushSpan.End()
 		markFailed(issueID, "git push failed")
-		log.Fatalf("vessel-driver: git push: %v", err)
+		die("git push failed", err)
 	}
+	pushSpan.End()
 
 	// Step 9d: close the issue.
+	_, beadsCloseSpan := tracer.Start(ctx, "legion.vessel.beads.close",
+		trace.WithAttributes(attribute.String("issue.id", issueID)),
+	)
 	if err := runCmd("", "bd", "close", issueID, "--reason", "completed"); err != nil {
-		log.Printf("vessel-driver: warning: bd close failed: %v", err)
+		beadsCloseSpan.RecordError(err)
+		beadsCloseSpan.SetStatus(codes.Error, err.Error())
+		slog.WarnContext(ctx, "bd close failed — issue may need manual close", "issue_id", issueID, "err", err)
 	}
+	beadsCloseSpan.End()
 
-	log.Printf("vessel-driver: issue %s closed — branch %s pushed", issueID, branch)
-	os.Exit(0)
+	// Mark root span successful before deferred End() fires.
+	rootSpan.SetStatus(codes.Ok, "")
+	rootSpan.SetAttributes(
+		attribute.String("git.branch", branch),
+		attribute.String("stop_reason", stopReason),
+	)
+
+	slog.InfoContext(ctx, "vessel complete", "issue_id", issueID, "branch", branch)
+	// rootSpan.End() and shutdown(ctx) called by defer — spans flushed to Jaeger.
 }
 
-// requireEnv returns the value of an env var or fatals.
+// requireEnv returns the value of an env var or exits 1.
+// Called before telemetry is initialised, so plain slog (no context) is used.
 func requireEnv(name string) string {
 	v := os.Getenv(name)
 	if v == "" {
-		log.Fatalf("vessel-driver: required env var %s is not set", name)
+		slog.Error("required env var not set", "name", name)
+		os.Exit(1)
 	}
 	return v
 }
@@ -185,7 +313,7 @@ func bdShow(id string) (*issueCore, error) {
 // markFailed marks an issue as blocked with a reason. Errors are logged but not fatal.
 func markFailed(issueID, reason string) {
 	if err := runCmd("", "bd", "update", issueID, "--status=blocked", "--append-notes="+reason); err != nil {
-		log.Printf("vessel-driver: warning: could not mark issue %s blocked: %v", issueID, err)
+		slog.Warn("could not mark issue blocked", "issue_id", issueID, "err", err)
 	}
 }
 

@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -11,6 +13,12 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/EmmittJ/legion/internal/telemetry"
 )
 
 // config holds all runtime configuration read from environment variables.
@@ -66,7 +74,14 @@ func (t *tracker) snapshot() map[string]entry {
 	return snap
 }
 
-// issueItem is the element returned by `bd ready --json` and `bd list --json`.
+// obs bundles the OpenTelemetry instruments shared across the pulse and watcher loops.
+type obs struct {
+	tracer         trace.Tracer
+	issuesSpawned  metric.Int64Counter
+	vesselDuration metric.Float64Histogram
+}
+
+
 // The JSON output is a flat array — no wrapping "issue" key.
 type issueItem struct {
 	ID     string `json:"id"`
@@ -145,27 +160,35 @@ func claimIssue(issueID string) error {
 }
 
 // markDone closes an issue in Beads with reason "completed" — correct terminal state for a clean vessel exit.
-func markDone(issueID string) {
+func markDone(ctx context.Context, issueID string) {
 	if _, err := run("bd", "close", issueID, "--reason", "completed"); err != nil {
-		log.Printf("ERROR: closing issue %s: %v", issueID, err)
+		slog.ErrorContext(ctx, "closing issue", "issue_id", issueID, "err", err)
 	}
 }
 
 // markError marks an issue blocked in Beads and appends a reason note.
 // "failed" is not a valid Beads status; blocked is the correct terminal-error state.
-func markError(issueID, reason string) {
+func markError(ctx context.Context, issueID, reason string) {
 	if _, err := run("bd", "update", issueID, "--status=blocked", "--append-notes", reason); err != nil {
-		log.Printf("ERROR: marking issue %s blocked: %v", issueID, err)
+		slog.ErrorContext(ctx, "marking issue blocked", "issue_id", issueID, "err", err)
 	}
 }
 
-func markBlocked(issueID, note string) {
+func markBlocked(ctx context.Context, issueID, note string) {
 	if _, err := run("bd", "update", issueID, "--status=blocked", "--append-notes", note); err != nil {
-		log.Printf("ERROR: marking issue %s blocked: %v", issueID, err)
+		slog.ErrorContext(ctx, "marking issue blocked", "issue_id", issueID, "err", err)
 	}
 }
 
-func spawnVessel(cfg config, issueID, name string) error {
+func spawnVessel(ctx context.Context, cfg config, issueID, name string, o *obs) error {
+	ctx, span := o.tracer.Start(ctx, "legion.archon.vessel.spawn",
+		trace.WithAttributes(
+			attribute.String("issue.id", issueID),
+			attribute.String("container.name", name),
+		),
+	)
+	defer span.End()
+
 	_, err := run(
 		"docker", "run",
 		"--detach",
@@ -179,15 +202,20 @@ func spawnVessel(cfg config, issueID, name string) error {
 		"-e", "VESSEL_MODEL="+cfg.vesselModel,
 		cfg.vesselImage,
 	)
-	return err
+	if err != nil {
+		span.RecordError(err)
+		return err
+	}
+	o.issuesSpawned.Add(ctx, 1)
+	return nil
 }
 
 // removeContainer removes a stopped container via `docker rm -f`. Best-effort:
 // if the container is already gone or the call fails for any reason, the error
 // is logged and swallowed — callers must not depend on this succeeding.
-func removeContainer(name string) {
+func removeContainer(ctx context.Context, name string) {
 	if _, err := run("docker", "rm", "-f", name); err != nil {
-		log.Printf("WARN: removing container %s: %v", name, err)
+		slog.WarnContext(ctx, "removing container", "container", name, "err", err)
 	}
 }
 
@@ -204,12 +232,18 @@ func inspectState(name string) (containerState, error) {
 }
 
 // pulse is a single execution of the pulse loop body.
-func pulse(cfg config, t *tracker) {
+func pulse(ctx context.Context, cfg config, t *tracker, o *obs) {
+	ctx, span := o.tracer.Start(ctx, "legion.archon.pulse")
+	defer span.End()
+
 	issues, err := listReadyIssues()
 	if err != nil {
-		log.Printf("ERROR: pulse: %v", err)
+		slog.ErrorContext(ctx, "pulse: listing ready issues", "err", err)
+		span.RecordError(err)
 		return
 	}
+
+	spawned := 0
 	for _, iss := range issues {
 		name := containerName(iss.ID)
 		if t.has(name) {
@@ -217,94 +251,145 @@ func pulse(cfg config, t *tracker) {
 		}
 		if err := claimIssue(iss.ID); err != nil {
 			// Another Archon instance may have already claimed it — skip silently.
-			log.Printf("ERROR: claim %s (skipping): %v", iss.ID, err)
+			slog.ErrorContext(ctx, "claim issue (skipping)", "issue_id", iss.ID, "err", err)
 			continue
 		}
-		if err := spawnVessel(cfg, iss.ID, name); err != nil {
-			log.Printf("ERROR: spawning vessel for %s: %v", iss.ID, err)
-			markError(iss.ID, fmt.Sprintf("spawn failed: %v", err))
+		if err := spawnVessel(ctx, cfg, iss.ID, name, o); err != nil {
+			slog.ErrorContext(ctx, "spawning vessel", "issue_id", iss.ID, "err", err)
+			markError(ctx, iss.ID, fmt.Sprintf("spawn failed: %v", err))
 			continue
 		}
 		t.add(name, iss.ID)
-		log.Printf("spawned %s for issue %s", name, iss.ID)
+		slog.InfoContext(ctx, "spawned vessel", "container", name, "issue_id", iss.ID)
+		spawned++
 	}
+
+	span.SetAttributes(
+		attribute.Int("ready_count", len(issues)),
+		attribute.Int("spawned_count", spawned),
+	)
 }
 
 // watch is a single execution of the watcher loop body.
-func watch(cfg config, t *tracker) {
+func watch(ctx context.Context, cfg config, t *tracker, o *obs) {
+	ctx, span := o.tracer.Start(ctx, "legion.archon.watcher.tick")
+	defer span.End()
+
 	for name, e := range t.snapshot() {
 		state, err := inspectState(name)
 		if err != nil {
-			log.Printf("ERROR: watcher: %v", err)
+			slog.ErrorContext(ctx, "watcher: inspect failed", "container", name, "err", err)
+			span.RecordError(err)
 			continue
 		}
 		switch {
 		case state.Status == "exited" && state.ExitCode == 0:
-			log.Printf("vessel %s exited cleanly (issue %s)", name, e.issueID)
-			markDone(e.issueID)
-			removeContainer(name)
+			slog.InfoContext(ctx, "vessel exited cleanly", "container", name, "issue_id", e.issueID)
+			span.AddEvent("vessel.exit", trace.WithAttributes(
+				attribute.String("issue.id", e.issueID),
+				attribute.Int("exit_code", 0),
+			))
+			o.vesselDuration.Record(ctx, time.Since(e.startedAt).Seconds())
+			markDone(ctx, e.issueID)
+			removeContainer(ctx, name)
 			t.remove(name)
 
 		case state.Status == "exited":
-			log.Printf("vessel %s exited with code %d (issue %s)", name, state.ExitCode, e.issueID)
-			markError(e.issueID, fmt.Sprintf("vessel exited with code %d", state.ExitCode))
-			removeContainer(name)
+			slog.WarnContext(ctx, "vessel exited with error",
+				"container", name, "exit_code", state.ExitCode, "issue_id", e.issueID)
+			span.AddEvent("vessel.exit", trace.WithAttributes(
+				attribute.String("issue.id", e.issueID),
+				attribute.Int("exit_code", state.ExitCode),
+			))
+			o.vesselDuration.Record(ctx, time.Since(e.startedAt).Seconds())
+			markError(ctx, e.issueID, fmt.Sprintf("vessel exited with code %d", state.ExitCode))
+			removeContainer(ctx, name)
 			t.remove(name)
 
 		case time.Since(e.startedAt) > cfg.timeout:
-			log.Printf("vessel %s timed out after %v (issue %s)", name, cfg.timeout, e.issueID)
-			markBlocked(e.issueID, "vessel timed out")
+			slog.WarnContext(ctx, "vessel timed out",
+				"container", name, "timeout", cfg.timeout, "issue_id", e.issueID)
+			span.AddEvent("vessel.timeout", trace.WithAttributes(
+				attribute.String("issue.id", e.issueID),
+			))
+			markBlocked(ctx, e.issueID, "vessel timed out")
 			if _, err := run("docker", "stop", name); err != nil {
-				log.Printf("ERROR: stopping timed-out vessel %s: %v", name, err)
+				slog.ErrorContext(ctx, "stopping timed-out vessel", "container", name, "err", err)
 			}
-			removeContainer(name)
+			removeContainer(ctx, name)
 			t.remove(name)
 		}
 	}
 }
 
-func pulseLoop(cfg config, t *tracker, done <-chan struct{}) {
+func pulseLoop(ctx context.Context, cfg config, t *tracker, o *obs) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-done:
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			pulse(cfg, t)
+			pulse(ctx, cfg, t, o)
 		}
 	}
 }
 
-func watcherLoop(cfg config, t *tracker, done <-chan struct{}) {
+func watcherLoop(ctx context.Context, cfg config, t *tracker, o *obs) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-done:
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			watch(cfg, t)
+			watch(ctx, cfg, t, o)
 		}
 	}
 }
 
 func main() {
-	log.SetFlags(log.Ldate | log.Ltime | log.LUTC)
-	log.SetOutput(os.Stderr)
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	tracer, meter, metricsMux, shutdown, err := telemetry.Setup(ctx, "legion.archon")
+	if err != nil {
+		slog.Error("telemetry setup failed", "err", err)
+		// Non-fatal: continue without full telemetry.
+	}
+	defer shutdown(ctx)
+
+	// Metric instruments — safe to call on a noop meter if Setup partially failed.
+	issuesSpawned, _ := meter.Int64Counter("legion.issues.spawned",
+		metric.WithDescription("Total issues spawned as vessels"))
+	vesselDuration, _ := meter.Float64Histogram("legion.vessel.duration_seconds",
+		metric.WithDescription("Vessel container lifetime in seconds"))
+
+	o := &obs{
+		tracer:         tracer,
+		issuesSpawned:  issuesSpawned,
+		vesselDuration: vesselDuration,
+	}
+
+	// /metrics HTTP server — only started when Prometheus exporter is healthy.
+	if metricsMux != nil {
+		go func() {
+			srv := &http.Server{Addr: ":2112", Handler: metricsMux}
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Error("metrics server error", "err", err)
+			}
+		}()
+	}
 
 	cfg := loadConfig()
 	t := &tracker{runs: make(map[string]entry)}
 
-	done := make(chan struct{})
-	go pulseLoop(cfg, t, done)
-	go watcherLoop(cfg, t, done)
+	slog.Info("archon starting", "pulse_interval", "5s", "watcher_interval", "10s")
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
+	go pulseLoop(ctx, cfg, t, o)
+	go watcherLoop(ctx, cfg, t, o)
 
-	log.Println("received shutdown signal, stopping")
-	close(done)
+	<-ctx.Done()
+	slog.Info("received shutdown signal, stopping")
 	time.Sleep(500 * time.Millisecond)
 }

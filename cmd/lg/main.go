@@ -5,8 +5,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
+	"strconv"
 	"strings"
+	"syscall"
 	"text/tabwriter"
+	"time"
 )
 
 func main() {
@@ -22,6 +26,8 @@ func main() {
 		cmdStatus()
 	case "log":
 		cmdLog()
+	case "watch":
+		cmdWatch()
 	default:
 		fmt.Fprintf(os.Stderr, "lg: unknown command %q\n\n", os.Args[1])
 		printUsage()
@@ -34,6 +40,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  lg invoke \"<title>\"   — create a new task issue")
 	fmt.Fprintln(os.Stderr, "  lg status              — list open and in-progress issues")
 	fmt.Fprintln(os.Stderr, "  lg log <issue-id>      — show traces for an issue")
+	fmt.Fprintln(os.Stderr, "  lg watch [--interval=N] — live-refreshing status dashboard (default: 3s)")
 }
 
 // cmdInvoke creates a new Beads task issue.
@@ -184,6 +191,172 @@ func cmdLog() {
 			ts = "—"
 		}
 		fmt.Printf("  [%d] %s  %s\n", i+1, ts, entry.Content)
+	}
+}
+
+// cmdWatch runs a live-refreshing terminal dashboard that polls Beads every N
+// seconds and reprints a status summary. Exits cleanly on SIGINT / SIGTERM.
+//
+//	lg watch [--interval=<seconds>]
+func cmdWatch() {
+	interval := 3 // default
+
+	// Parse --interval=N from remaining args (os.Args[2:]).
+	for _, arg := range os.Args[2:] {
+		if strings.HasPrefix(arg, "--interval=") {
+			val := strings.TrimPrefix(arg, "--interval=")
+			n, err := strconv.Atoi(val)
+			if err != nil || n < 1 {
+				fmt.Fprintf(os.Stderr, "lg watch: invalid --interval %q (must be a positive integer)\n", val)
+				os.Exit(1)
+			}
+			interval = n
+		}
+	}
+
+	// Set up signal handling so Ctrl+C exits cleanly.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	type issueCore struct {
+		ID         string `json:"id"`
+		Title      string `json:"title"`
+		Status     string `json:"status"`
+		AssignedTo string `json:"assigned_to"`
+	}
+
+	// truncate returns s truncated to at most n runes, with "…" appended when
+	// trimming occurs.
+	truncate := func(s string, n int) string {
+		runes := []rune(s)
+		if len(runes) <= n {
+			return s
+		}
+		return string(runes[:n-1]) + "…"
+	}
+
+	// fetchIssues calls bd list for a single status and returns parsed results.
+	// On any error it returns nil, signalling the section should show
+	// "(unavailable)".
+	fetchIssues := func(status string) ([]issueCore, bool) {
+		out, err := bdOutput("list", "--status="+status, "--json")
+		if err != nil {
+			return nil, false
+		}
+		var batch []issueCore
+		if err := json.Unmarshal(out, &batch); err != nil {
+			return nil, false
+		}
+		return batch, true
+	}
+
+	paint := func() {
+		// Clear screen and move cursor to top.
+		fmt.Print("\033[H\033[2J")
+
+		ts := time.Now().UTC().Format("2006-01-02 15:04:05 UTC")
+		header := fmt.Sprintf("║  Legion Watch  —  %s", ts)
+		// Pad to fixed width (54 printable chars inside the box).
+		const boxInner = 54
+		pad := boxInner - len([]rune(header)) + 1 // +1 for leading ║
+		if pad < 0 {
+			pad = 0
+		}
+		fmt.Println("╔══════════════════════════════════════════════════════╗")
+		fmt.Printf("%s%s║\n", header, strings.Repeat(" ", pad))
+		fmt.Println("╚══════════════════════════════════════════════════════╝")
+		fmt.Println()
+
+		// ── ACTIVE ────────────────────────────────────────────────────────
+		active, activeOK := fetchIssues("in_progress")
+		fmt.Println("ACTIVE  (in_progress)")
+		switch {
+		case !activeOK:
+			fmt.Println("  (unavailable)")
+		case len(active) == 0:
+			fmt.Println("  (none)")
+		default:
+			for _, iss := range active {
+				assignedTo := iss.AssignedTo
+				if assignedTo == "" {
+					assignedTo = "—"
+				}
+				fmt.Printf("  %-10s  %-42s  %s\n",
+					iss.ID,
+					truncate(iss.Title, 40),
+					assignedTo,
+				)
+			}
+		}
+		fmt.Println()
+
+		// ── READY ─────────────────────────────────────────────────────────
+		ready, readyOK := fetchIssues("open")
+		switch {
+		case !readyOK:
+			fmt.Println("READY  (unavailable)")
+			fmt.Println("  (unavailable)")
+		case len(ready) == 0:
+			fmt.Println("READY  (0 waiting)")
+			fmt.Println("  (none)")
+		default:
+			fmt.Printf("READY  (%d waiting)\n", len(ready))
+			for _, iss := range ready {
+				fmt.Printf("  %-10s  %s\n", iss.ID, truncate(iss.Title, 40))
+			}
+		}
+		fmt.Println()
+
+		// ── RECENT ────────────────────────────────────────────────────────
+		var recent []issueCore
+		recentOK := true
+		for _, st := range []string{"closed", "failed"} {
+			batch, ok := fetchIssues(st)
+			if !ok {
+				recentOK = false
+				break
+			}
+			recent = append(recent, batch...)
+		}
+		fmt.Println("RECENT  (closed / failed — last 5)")
+		switch {
+		case !recentOK:
+			fmt.Println("  (unavailable)")
+		case len(recent) == 0:
+			fmt.Println("  (none yet)")
+		default:
+			// Take the last 5 by array order.
+			start := len(recent) - 5
+			if start < 0 {
+				start = 0
+			}
+			for _, iss := range recent[start:] {
+				fmt.Printf("  %-10s  %-42s  [%s]\n",
+					iss.ID,
+					truncate(iss.Title, 40),
+					iss.Status,
+				)
+			}
+		}
+		fmt.Println()
+
+		fmt.Printf("Press Ctrl+C to exit  |  refreshing every %ds\n", interval)
+	}
+
+	ticker := time.NewTicker(time.Duration(interval) * time.Second)
+	defer ticker.Stop()
+
+	// Paint immediately before first tick.
+	paint()
+
+	for {
+		select {
+		case <-sigCh:
+			fmt.Println("\nExiting.")
+			return
+		case <-ticker.C:
+			paint()
+		}
 	}
 }
 
