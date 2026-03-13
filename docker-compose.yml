@@ -1,52 +1,26 @@
 # Legion local dev stack
 # Required env vars: REPO_URL, GITHUB_TOKEN
 # Optional env vars: VESSEL_IMAGE (default: legion/vessel-copilot:latest), ARCHON_TIMEOUT (default: 3600), VESSEL_MODEL (default: gpt-5-mini)
-# Dolt connection env vars (injected into archon): BEADS_DOLT_SERVER_HOST, BEADS_DOLT_SERVER_PORT
 # Usage:
 #   docker compose build
 #   REPO_URL=https://github.com/owner/repo GITHUB_TOKEN=ghp_xxx docker compose up
 
 services:
-  dolt:
-    image: dolthub/dolt-sql-server:latest
-    ports:
-      - "3307:3306"
-    volumes:
-      - dolt-data:/var/lib/dolt
-      - ./dolt-init:/docker-entrypoint-initdb.d:ro
-    healthcheck:
-      test: ["CMD", "dolt", "sql", "-q", "SELECT 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-    networks:
-      - legion-net
-
   archon:
     build:
       context: .
       dockerfile: cmd/archon/Dockerfile
     environment:
-      - BEADS_DOLT_SERVER_HOST=dolt
-      - BEADS_DOLT_SERVER_PORT=3306
-      - BEADS_DOLT_SERVER_USER=dolt
       - REPO_URL=${REPO_URL}
       - VESSEL_IMAGE=${VESSEL_IMAGE:-legion/vessel-copilot:latest}
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - ARCHON_TIMEOUT=${ARCHON_TIMEOUT:-3600}
       - VESSEL_MODEL=${VESSEL_MODEL:-gpt-5-mini}
-    depends_on:
-      dolt:
-        condition: service_healthy
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
     networks:
       - legion-net
-
-volumes:
-  dolt-data:
 
 networks:
   legion-net:

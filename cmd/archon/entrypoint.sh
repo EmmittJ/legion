@@ -1,22 +1,16 @@
 #!/bin/sh
 
-# Initialize Beads and point it at the external Dolt SQL server.
-# BEADS_DOLT_SERVER_HOST and BEADS_DOLT_SERVER_PORT must be set (provided by docker-compose.yml).
+# Initialize Beads with embedded Dolt and sync state from GitHub (refs/dolt/data).
+# REPO_URL and GITHUB_TOKEN must be set (provided by docker-compose.yml).
 
 if [ ! -f ".beads/config.yaml" ]; then
     bd init || true
 
-    # Override the default 127.0.0.1 connection to use the external Dolt container.
-    DOLT_HOST="${BEADS_DOLT_SERVER_HOST:-dolt}"
-    DOLT_PORT="${BEADS_DOLT_SERVER_PORT:-3306}"
-    DOLT_USER="${BEADS_DOLT_SERVER_USER:-root}"
-
-    bd dolt set host "${DOLT_HOST}" || true
-    bd dolt set port "${DOLT_PORT}" || true
-    bd dolt set user "${DOLT_USER}" || true
-
-    if [ -n "${REPO_URL}" ]; then
-        bd dolt remote add origin "${REPO_URL}" || true
+    if [ -n "${GITHUB_TOKEN}" ] && [ -n "${REPO_URL}" ]; then
+        # Inject OAuth2 token into the HTTPS URL for Dolt-over-git transport.
+        AUTH_URL="$(echo "${REPO_URL}" | sed "s|https://|git+https://oauth2:${GITHUB_TOKEN}@|")"
+        bd dolt remote add origin "${AUTH_URL}" || true
+        bd dolt pull || true
     fi
 fi
 

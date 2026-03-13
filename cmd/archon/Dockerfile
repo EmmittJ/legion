@@ -42,9 +42,7 @@ RUN set -eux; \
 
 # Docker CLI — Archon shells out to docker run/stop/rm for vessel lifecycle
 RUN set -eux; \
-    DOCKER_VER=$(curl -fsSL https://api.github.com/repos/moby/moby/releases/latest \
-        | grep '"tag_name"' | sed 's/.*"v\([^"]*\)".*/\1/' | head -1); \
-    curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VER}.tgz" \
+    curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-27.5.1.tgz" \
         -o /tmp/docker.tgz \
     && tar -xzf /tmp/docker.tgz --strip-components=1 -C /usr/local/bin/ docker/docker \
     && chmod +x /usr/local/bin/docker \
