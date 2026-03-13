@@ -4,6 +4,8 @@ set -e
 # Initialize Beads with GitHub as the Dolt git remote.
 # Expects: GITHUB_TOKEN, REPO_URL
 
+[ -z "${REPO_URL}" ] && echo '[archon-init] ERROR: REPO_URL is unset' && exit 1
+
 BD_REMOTE="${BD_REMOTE:-git+$(echo "${REPO_URL}" | sed 's|\.git$||').git}"
 
 echo "[archon-init] Initializing Beads..."
