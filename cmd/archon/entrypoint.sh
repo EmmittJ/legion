@@ -1,58 +1,41 @@
 #!/bin/sh
-
 set -e
 
-# Initialize Beads with Dolt SQL server backend.
-# Expects environment variables:
-#   - BEADS_DOLT_SERVER_HOST (e.g., "dolt")
-#   - BEADS_DOLT_SERVER_PORT (e.g., "3306")
-#   - GITHUB_TOKEN (optional, for syncing from GitHub)
-#   - REPO_URL (optional, for syncing from GitHub)
+# Initialize Beads with GitHub as the Dolt git remote.
+# Expects: GITHUB_TOKEN, REPO_URL
 
-DOLT_HOST="${BEADS_DOLT_SERVER_HOST:-dolt}"
-DOLT_PORT="${BEADS_DOLT_SERVER_PORT:-3306}"
-DB_NAME="beads"
+BD_REMOTE="${BD_REMOTE:-git+$(echo "${REPO_URL}" | sed 's|\.git$||').git}"
 
-echo "[archon-init] Initializing Beads with Dolt SQL server at ${DOLT_HOST}:${DOLT_PORT}..."
+echo "[archon-init] Initializing Beads..."
 
-# Retry bd init up to 10 times with 2-second waits.
-# bd init will automatically detect the dolt server if it's running on the standard ports
-RETRY_COUNT=0
-MAX_RETRIES=10
-while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-    if bd init \
-        --server-host="${DOLT_HOST}" \
-        --server-port="${DOLT_PORT}" \
-        --database="${DB_NAME}" \
-        --quiet 2>/dev/null; then
-        echo "[archon-init] Beads initialized successfully."
-        break
+# Configure gh so git operations authenticate without embedding the token in URLs
+if [ -n "${GITHUB_TOKEN}" ]; then
+    GH_TOKEN="${GITHUB_TOKEN}" gh auth setup-git
+fi
+
+# Initialize local Dolt database on first boot (idempotent: skipped if already initialised)
+if [ ! -f /app/.beads/metadata.json ]; then
+    RETRY_COUNT=0
+    MAX_RETRIES=10
+    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+        if bd init --quiet 2>/dev/null; then
+            echo "[archon-init] Beads initialized."
+            break
+        fi
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+        echo "[archon-init] Attempt $RETRY_COUNT/$MAX_RETRIES failed. Retrying in 2s..."
+        sleep 2
+    done
+    if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+        echo "[archon-init] WARNING: Failed to initialize Beads after ${MAX_RETRIES} attempts, continuing anyway."
     fi
-    RETRY_COUNT=$((RETRY_COUNT + 1))
-    echo "[archon-init] Attempt $RETRY_COUNT/$MAX_RETRIES failed. Retrying in 2s..."
-    sleep 2
-done
-
-if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-    echo "[archon-init] WARNING: Failed to initialize Beads after ${MAX_RETRIES} attempts, but continuing anyway."
 fi
 
-# Verify that Beads is working (non-fatal if it fails)
-echo "[archon-init] Verifying Beads connectivity..."
-if ! bd list --all >/dev/null 2>&1; then
-    echo "[archon-init] WARNING: Beads list command failed, but continuing."
-fi
+# Add GitHub as the Dolt git remote (idempotent)
+bd dolt remote add origin "${BD_REMOTE}" 2>/dev/null || true
 
-# Optional: sync from GitHub if credentials are provided
-if [ -n "${GITHUB_TOKEN}" ] && [ -n "${REPO_URL}" ]; then
-    echo "[archon-init] Syncing Beads state from GitHub..."
-    # Inject OAuth2 token into the HTTPS URL for Dolt-over-git transport
-    AUTH_URL="$(echo "${REPO_URL}" | sed "s|https://|git+https://oauth2:${GITHUB_TOKEN}@|")"
-    bd dolt remote add origin "${AUTH_URL}" 2>/dev/null || true
-    bd dolt pull || echo "[archon-init] Warning: Dolt pull failed (may be first sync)"
-else
-    echo "[archon-init] Skipping GitHub sync (GITHUB_TOKEN and/or REPO_URL not provided)"
-fi
+# Pull latest issues from GitHub
+bd dolt pull || echo "[archon-init] Warning: Dolt pull failed (may be first boot)"
 
 echo "[archon-init] Initialization complete. Starting Archon..."
 exec /archon

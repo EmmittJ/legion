@@ -101,13 +101,32 @@ bd close bd-42 --reason "Completed" --json
    - `bd create "Found bug" --description="Details about what was found" -p 1 --deps discovered-from:<parent-id>`
 5. **Complete**: `bd close <id> --reason "Done"`
 
-### Auto-Sync
+### Beads Storage Model
 
-bd automatically syncs via Dolt:
+Beads uses a **local Dolt database** (`.beads/dolt/`) with the GitHub repo as the git remote. There is no separate Dolt SQL server to run or manage.
 
-- Each write auto-commits to Dolt history
-- Use `bd dolt push`/`bd dolt pull` for remote sync
-- No manual export/import needed!
+- The Dolt database lives at `.beads/dolt/lg/` — version-controlled, git-backed
+- The GitHub repo (`refs/dolt/data`) is the remote — same repo, no extra infra
+- Each `bd` write auto-commits to local Dolt history
+- Sync with `bd dolt push` / `bd dolt pull`
+
+**For Docker containers (Archon, vessels):**
+
+Each container initialises its own local Dolt at startup by pulling from the GitHub remote:
+
+```sh
+bd init                                              # create local db on first boot
+bd dolt remote add origin git+https://github.com/EmmittJ/legion.git
+bd dolt pull                                         # get current issues
+# ... do work ...
+bd dolt push                                         # publish changes back
+```
+
+`gh auth setup-git` (called with `GH_TOKEN` set) handles HTTPS auth — no token in URLs.
+
+**Never** run a shared Dolt SQL server or mount the host's `.beads/` into a container. Each environment manages its own local copy; GitHub is the coordination point.
+
+See: https://docs.dolthub.com/concepts/dolt/git/remotes
 
 ### Important Rules
 

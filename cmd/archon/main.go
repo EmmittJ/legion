@@ -23,8 +23,6 @@ import (
 
 // config holds all runtime configuration read from environment variables.
 type config struct {
-	doltHost    string
-	doltPort    string
 	repoURL     string
 	vesselImage string
 	githubToken string
@@ -103,8 +101,6 @@ func loadConfig() config {
 		}
 	}
 	return config{
-		doltHost:    os.Getenv("BEADS_DOLT_SERVER_HOST"),
-		doltPort:    os.Getenv("BEADS_DOLT_SERVER_PORT"),
 		repoURL:     os.Getenv("REPO_URL"),
 		vesselImage: os.Getenv("VESSEL_IMAGE"),
 		githubToken: os.Getenv("GITHUB_TOKEN"),
@@ -196,8 +192,6 @@ func spawnVessel(ctx context.Context, cfg config, issueID, name string, o *obs) 
 		"--name", name,
 		"--network=legion_legion-net",
 		"-e", "ISSUE_ID="+issueID,
-		"-e", "BEADS_DOLT_SERVER_HOST="+cfg.doltHost,
-		"-e", "BEADS_DOLT_SERVER_PORT="+cfg.doltPort,
 		"-e", "REPO_URL="+cfg.repoURL,
 		"-e", "GITHUB_TOKEN="+cfg.githubToken,
 		"-e", "VESSEL_MODEL="+cfg.vesselModel,

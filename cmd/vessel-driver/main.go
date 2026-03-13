@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"os"
 	"os/exec"
 	"strconv"
@@ -59,8 +58,22 @@ func main() {
 	issueID := requireEnv("ISSUE_ID")
 	repoURL := requireEnv("REPO_URL")
 	githubToken := requireEnv("GITHUB_TOKEN")
-	_ = requireEnv("DOLT_DSN") // validated at startup; used implicitly by bd CLI
 	model := os.Getenv("VESSEL_MODEL")
+
+	// Configure git credential store so the token never appears in remote URLs
+	// or log output.  Must happen before any git operation.
+	if err := setupGitCredentials(githubToken); err != nil {
+		slog.Error("git credential setup failed", "err", err)
+		os.Exit(1)
+	}
+
+	// Initialize the local Beads Dolt database from the GitHub git remote.
+	// This replaces the shared DOLT_DSN model: each vessel carries its own bd
+	// instance seeded from origin.  Must happen before any `bd` command.
+	if err := initBeads(repoURL); err != nil {
+		slog.Error("beads init failed", "err", err)
+		os.Exit(1)
+	}
 
 	ctx := context.Background()
 
@@ -301,25 +314,8 @@ func main() {
 	_ = tw.Write("GIT", fmt.Sprintf("committed: %s", commitMsg))
 
 	// Step 9c: git push.
-	// Inject token into the origin remote URL so the push authenticates without
-	// exposing the credential as a command-line argument (visible in `ps aux`).
-	pushURL, err := buildPushURL(repoURL, githubToken)
-	if err != nil {
-		pushSpan.RecordError(err)
-		pushSpan.SetStatus(codes.Error, err.Error())
-		pushSpan.End()
-		_ = tw.Write("GIT", fmt.Sprintf("build push URL failed: %v", err))
-		markFailed(issueID, "git push failed")
-		die("build push URL failed", err)
-	}
-	if err := runCmd("/workspace", "git", "remote", "set-url", "origin", pushURL); err != nil {
-		pushSpan.RecordError(err)
-		pushSpan.SetStatus(codes.Error, err.Error())
-		pushSpan.End()
-		_ = tw.Write("GIT", fmt.Sprintf("remote set-url failed: %v", err))
-		markFailed(issueID, "git push failed")
-		die("git remote set-url failed", err)
-	}
+	// gh auth setup-git already wired the credential helper, so the clone URL
+	// is used as-is — no token injection into the remote URL needed.
 	if err := runCmd("/workspace", "git", "push", "origin", branch); err != nil {
 		pushSpan.RecordError(err)
 		pushSpan.SetStatus(codes.Error, err.Error())
@@ -444,29 +440,69 @@ func execOutput(dir, name string, args ...string) ([]byte, error) {
 	return out, nil
 }
 
-// buildPushURL injects the GitHub token into the repo URL.
-// Handles both https://github.com/owner/repo and git@github.com:owner/repo formats.
-func buildPushURL(repoURL, token string) (string, error) {
-	// Convert SSH format to HTTPS.
-	httpsURL := repoURL
-	if strings.HasPrefix(repoURL, "git@github.com:") {
-		path := strings.TrimPrefix(repoURL, "git@github.com:")
-		httpsURL = "https://github.com/" + path
+// setupGitCredentials configures git's credential helper via `gh auth setup-git`
+// so that the token never appears in remote URLs or log output.
+// GH_TOKEN is set in-process so the gh invocation picks it up automatically.
+func setupGitCredentials(token string) error {
+	if err := os.Setenv("GH_TOKEN", token); err != nil {
+		return fmt.Errorf("set GH_TOKEN: %w", err)
+	}
+	cmd := exec.CommandContext(context.Background(), "gh", "auth", "setup-git")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gh auth setup-git: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+// initBeads bootstraps the local Beads Dolt database inside the vessel container.
+// Each vessel runs its own bd instance; there is no shared Dolt SQL server.
+//
+// Steps:
+//  1. If /app/.beads/metadata.json already exists the database is already
+//     initialised (e.g. a cached layer) — skip silently.
+//  2. bd init --quiet  — creates the local Dolt database.
+//  3. bd dolt remote add origin <git+https remote>  — wires the GitHub remote.
+//  4. bd dolt pull  — syncs current issues from GitHub (warn-only; a fresh init
+//     with no upstream history is acceptable).
+//
+// The git+https remote URL is derived from repoURL by:
+//   - Stripping a trailing ".git" suffix (if present), then re-appending it to
+//     normalise the form.
+//   - Replacing the "https://" scheme prefix with "git+https://".
+//
+// git auth is already set up by setupGitCredentials before this is called.
+func initBeads(repoURL string) error {
+	const metadataPath = "/app/.beads/metadata.json"
+	if _, err := os.Stat(metadataPath); err == nil {
+		slog.Info("beads already initialised — skipping init", "path", metadataPath)
+		return nil
 	}
 
-	// Ensure .git suffix for consistency.
-	if !strings.HasSuffix(httpsURL, ".git") {
-		httpsURL += ".git"
+	// Derive the git+https remote URL.
+	// e.g. https://github.com/EmmittJ/legion.git  →  git+https://github.com/EmmittJ/legion.git
+	remote := strings.TrimSuffix(repoURL, ".git") + ".git"
+	remote = "git+" + remote // prepend git+ to whatever scheme is present
+	// Guard: only rewrite https:// — if the URL already starts with git+https:// we'd
+	// double-prefix it.  Strip the erroneous double-prefix if it happened.
+	remote = strings.ReplaceAll(remote, "git+git+", "git+")
+
+	// Step 2: bd init
+	if err := runCmd("/app", "bd", "init", "--quiet"); err != nil {
+		return fmt.Errorf("bd init: %w", err)
 	}
 
-	u, err := url.Parse(httpsURL)
-	if err != nil {
-		return "", fmt.Errorf("parse repo URL %q: %w", httpsURL, err)
-	}
-	if u.Host == "" {
-		return "", fmt.Errorf("repo URL %q has no host", httpsURL)
+	// Step 3: wire the remote
+	if err := runCmd("/app", "bd", "dolt", "remote", "add", "origin", remote); err != nil {
+		return fmt.Errorf("bd dolt remote add origin: %w", err)
 	}
 
-	u.User = url.UserPassword("x-access-token", token)
-	return u.String(), nil
+	// Step 4: pull current issues (warn-only — an empty upstream is fine)
+	if err := runCmd("/app", "bd", "dolt", "pull"); err != nil {
+		slog.Warn("bd dolt pull failed — continuing with empty local db", "err", err)
+	}
+
+	slog.Info("beads initialised", "remote", remote)
+	return nil
 }

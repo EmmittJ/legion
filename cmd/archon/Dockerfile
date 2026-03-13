@@ -25,9 +25,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o archon ./cmd/archon
 FROM debian:bookworm-slim
 
 # Install runtime deps: curl+ca-certs for bd download; bd itself for Beads CLI calls
-# default-mysql-client for Dolt server connectivity checks during entrypoint initialization
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates tar git default-mysql-client \
+    && apt-get install -y --no-install-recommends curl ca-certificates tar git \
     && rm -rf /var/lib/apt/lists/*
 
 # Beads CLI — Archon shells out to bd for issue lifecycle management
@@ -49,6 +48,19 @@ RUN set -eux; \
     && chmod +x /usr/local/bin/docker \
     && rm -f /tmp/docker.tgz
 
+# GitHub CLI — `gh auth setup-git` wires git's credential helper so tokens
+# never appear in remote URLs or log output
+RUN set -eux; \
+    GH_VER=$(curl -fsSL https://api.github.com/repos/cli/cli/releases/latest \
+        | grep '"tag_name"' | sed 's/.*"v\([^"]*\)".*/\1/'); \
+    curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VER}/gh_${GH_VER}_linux_amd64.tar.gz" \
+        -o /tmp/gh.tar.gz \
+    && mkdir -p /tmp/gh-extract \
+    && tar -xzf /tmp/gh.tar.gz -C /tmp/gh-extract \
+    && find /tmp/gh-extract -type f -name 'gh' -exec mv {} /usr/local/bin/gh \; \
+    && chmod +x /usr/local/bin/gh \
+    && rm -rf /tmp/gh.tar.gz /tmp/gh-extract
+
 # CA certificates from builder (already in debian base, but keep for consistency)
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
@@ -57,7 +69,7 @@ COPY --from=builder /build/archon /archon
 
 WORKDIR /app
 
-# Entrypoint: initialize bd against the Dolt SQL server, then run archon
+# Entrypoint: initialize bd against the GitHub-backed embedded Dolt, then run archon
 COPY cmd/archon/entrypoint.sh /entrypoint.sh
 RUN sed -i 's/\r//' /entrypoint.sh && chmod +x /entrypoint.sh
 
