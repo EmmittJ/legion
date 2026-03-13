@@ -30,6 +30,18 @@ RUN set -eux; \
     && chmod +x /usr/local/bin/bd \
     && rm -f /tmp/beads.tar.gz /tmp/bd 2>/dev/null; true
 
+# Dolt — bd init auto-starts dolt as a subprocess; must be present in PATH
+RUN set -eux; \
+    DOLT_VER=$(curl -fsSL https://api.github.com/repos/dolthub/dolt/releases/latest \
+        | grep '"tag_name"' | sed 's/.*"v\([^"]*\)".*/\1/'); \
+    curl -fsSL "https://github.com/dolthub/dolt/releases/download/v${DOLT_VER}/dolt-linux-amd64.tar.gz" \
+        -o /tmp/dolt.tar.gz \
+    && mkdir -p /tmp/dolt-extract \
+    && tar -xzf /tmp/dolt.tar.gz -C /tmp/dolt-extract \
+    && find /tmp/dolt-extract -type f -name 'dolt' -exec mv {} /usr/local/bin/dolt \; \
+    && chmod +x /usr/local/bin/dolt \
+    && rm -rf /tmp/dolt.tar.gz /tmp/dolt-extract
+
 # Copilot CLI — ACP server (copilot --acp --stdio)
 RUN set -eux; \
     COPILOT_VER=$(curl -fsSL https://api.github.com/repos/github/copilot-cli/releases/latest \
