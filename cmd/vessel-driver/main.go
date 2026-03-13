@@ -29,6 +29,7 @@ func main() {
 
 	// Step 3: Clone the repo.
 	if err := runCmd("", "git", "clone", repoURL, "/workspace"); err != nil {
+		markFailed(issueID, "git clone failed")
 		log.Fatalf("vessel-driver: git clone: %v", err)
 	}
 
@@ -122,13 +123,18 @@ func main() {
 	}
 
 	// Step 9c: git push.
+	// Inject token into the origin remote URL so the push authenticates without
+	// exposing the credential as a command-line argument (visible in `ps aux`).
 	pushURL, err := buildPushURL(repoURL, githubToken)
 	if err != nil {
 		markFailed(issueID, "git push failed")
 		log.Fatalf("vessel-driver: build push URL: %v", err)
 	}
-
-	if err := runCmd("/workspace", "git", "push", pushURL, branch); err != nil {
+	if err := runCmd("/workspace", "git", "remote", "set-url", "origin", pushURL); err != nil {
+		markFailed(issueID, "git push failed")
+		log.Fatalf("vessel-driver: git remote set-url: %v", err)
+	}
+	if err := runCmd("/workspace", "git", "push", "origin", branch); err != nil {
 		markFailed(issueID, "git push failed")
 		log.Fatalf("vessel-driver: git push: %v", err)
 	}
