@@ -66,14 +66,12 @@ func (t *tracker) snapshot() map[string]entry {
 	return snap
 }
 
-// issueItem is the envelope returned by `bd ready --json` and `bd list --json`.
-// Each element wraps the inner issue object in an "issue" key.
+// issueItem is the element returned by `bd ready --json` and `bd list --json`.
+// The JSON output is a flat array — no wrapping "issue" key.
 type issueItem struct {
-	Issue struct {
-		ID     string `json:"id"`
-		Title  string `json:"title"`
-		Status string `json:"status"`
-	} `json:"issue"`
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Status string `json:"status"`
 }
 
 type containerState struct {
@@ -213,22 +211,22 @@ func pulse(cfg config, t *tracker) {
 		return
 	}
 	for _, iss := range issues {
-		name := containerName(iss.Issue.ID)
+		name := containerName(iss.ID)
 		if t.has(name) {
 			continue
 		}
-		if err := claimIssue(iss.Issue.ID); err != nil {
+		if err := claimIssue(iss.ID); err != nil {
 			// Another Archon instance may have already claimed it — skip silently.
-			log.Printf("ERROR: claim %s (skipping): %v", iss.Issue.ID, err)
+			log.Printf("ERROR: claim %s (skipping): %v", iss.ID, err)
 			continue
 		}
-		if err := spawnVessel(cfg, iss.Issue.ID, name); err != nil {
-			log.Printf("ERROR: spawning vessel for %s: %v", iss.Issue.ID, err)
-			markError(iss.Issue.ID, fmt.Sprintf("spawn failed: %v", err))
+		if err := spawnVessel(cfg, iss.ID, name); err != nil {
+			log.Printf("ERROR: spawning vessel for %s: %v", iss.ID, err)
+			markError(iss.ID, fmt.Sprintf("spawn failed: %v", err))
 			continue
 		}
-		t.add(name, iss.Issue.ID)
-		log.Printf("spawned %s for issue %s", name, iss.Issue.ID)
+		t.add(name, iss.ID)
+		log.Printf("spawned %s for issue %s", name, iss.ID)
 	}
 }
 

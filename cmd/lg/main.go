@@ -75,9 +75,6 @@ func cmdStatus() {
 		Status     string `json:"status"`
 		AssignedTo string `json:"assigned_to"`
 	}
-	type issueEntry struct {
-		Issue issueCore `json:"issue"`
-	}
 
 	var allIssues []issueCore
 
@@ -88,13 +85,13 @@ func cmdStatus() {
 			continue
 		}
 
-		var batch []issueEntry
+		var batch []issueCore
 		if err := json.Unmarshal(out, &batch); err != nil {
 			fmt.Fprintf(os.Stderr, "lg status: parse %s issues: %v\n", status, err)
 			continue
 		}
 		for _, e := range batch {
-			allIssues = append(allIssues, e.Issue)
+			allIssues = append(allIssues, e)
 		}
 	}
 
@@ -137,31 +134,29 @@ func cmdLog() {
 		os.Exit(1)
 	}
 
-	var env struct {
-		Issue struct {
-			ID          string `json:"id"`
-			Title       string `json:"title"`
-			Status      string `json:"status"`
-			Description string `json:"description"`
-			AssignedTo  string `json:"assigned_to"`
-			Notes       []struct {
-				Timestamp string `json:"timestamp"`
-				Content   string `json:"content"`
-			} `json:"notes"`
-			Traces []struct {
-				Timestamp string `json:"timestamp"`
-				Content   string `json:"content"`
-			} `json:"traces"`
-		} `json:"issue"`
+	type noteEntry struct {
+		Timestamp string `json:"timestamp"`
+		Content   string `json:"content"`
+	}
+	type issueDetail struct {
+		ID          string      `json:"id"`
+		Title       string      `json:"title"`
+		Status      string      `json:"status"`
+		Description string      `json:"description"`
+		AssignedTo  string      `json:"assigned_to"`
+		Notes       []noteEntry `json:"notes"`
+		Traces      []noteEntry `json:"traces"`
 	}
 
-	if err := json.Unmarshal(out, &env); err != nil {
-		// Fallback: print raw JSON if parsing fails.
+	// bd show returns a single-element flat array: [{"id":"...","title":"...",...}]
+	var items []issueDetail
+	if err := json.Unmarshal(out, &items); err != nil || len(items) == 0 {
+		// Fallback: print raw JSON if parsing fails or array is empty.
 		fmt.Println(string(out))
 		return
 	}
 
-	detail := env.Issue
+	detail := items[0]
 
 	fmt.Printf("Issue: %s — %s [%s]\n", detail.ID, detail.Title, detail.Status)
 	if detail.Description != "" {
@@ -174,12 +169,7 @@ func cmdLog() {
 	entries := detail.Notes
 	if len(entries) == 0 && len(detail.Traces) > 0 {
 		// Use traces field if notes is empty.
-		for _, t := range detail.Traces {
-			entries = append(entries, struct {
-				Timestamp string `json:"timestamp"`
-				Content   string `json:"content"`
-			}{Timestamp: t.Timestamp, Content: t.Content})
-		}
+		entries = append(entries, detail.Traces...)
 	}
 
 	if len(entries) == 0 {

@@ -40,6 +40,16 @@ RUN set -eux; \
     && chmod +x /usr/local/bin/bd \
     && rm -f /tmp/beads.tar.gz; true
 
+# Docker CLI — Archon shells out to docker run/stop/rm for vessel lifecycle
+RUN set -eux; \
+    DOCKER_VER=$(curl -fsSL https://api.github.com/repos/moby/moby/releases/latest \
+        | grep '"tag_name"' | sed 's/.*"v\([^"]*\)".*/\1/' | head -1); \
+    curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VER}.tgz" \
+        -o /tmp/docker.tgz \
+    && tar -xzf /tmp/docker.tgz --strip-components=1 -C /usr/local/bin/ docker/docker \
+    && chmod +x /usr/local/bin/docker \
+    && rm -f /tmp/docker.tgz
+
 # CA certificates from builder (already in debian base, but keep for consistency)
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
@@ -49,6 +59,7 @@ COPY --from=builder /build/archon /archon
 WORKDIR /app
 
 # Entrypoint: initialize bd against the Dolt SQL server, then run archon
-COPY --chmod=755 cmd/archon/entrypoint.sh /entrypoint.sh
+COPY cmd/archon/entrypoint.sh /entrypoint.sh
+RUN sed -i 's/\r//' /entrypoint.sh && chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]

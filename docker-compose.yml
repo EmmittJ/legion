@@ -13,6 +13,7 @@ services:
       - "3307:3306"
     volumes:
       - dolt-data:/var/lib/dolt
+      - ./dolt-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD", "dolt", "sql", "-q", "SELECT 1"]
       interval: 10s
@@ -29,6 +30,7 @@ services:
     environment:
       - BEADS_DOLT_SERVER_HOST=dolt
       - BEADS_DOLT_SERVER_PORT=3306
+      - BEADS_DOLT_SERVER_USER=dolt
       - REPO_URL=${REPO_URL}
       - VESSEL_IMAGE=${VESSEL_IMAGE:-legion/vessel-copilot:latest}
       - GITHUB_TOKEN=${GITHUB_TOKEN}
