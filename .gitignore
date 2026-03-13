@@ -6,6 +6,9 @@
 # Compiled Windows binaries
 *.exe
 
+# Compiled Go binaries
+vessel-driver
+
 # Local environment — contains secrets; never commit
 .env
 
