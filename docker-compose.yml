@@ -14,7 +14,7 @@ services:
     volumes:
       - dolt-data:/var/lib/dolt
     healthcheck:
-      test: ["CMD-SHELL", "mysql -u root -e 'SELECT 1' 2>/dev/null || exit 1"]
+      test: ["CMD", "dolt", "sql", "-q", "SELECT 1"]
       interval: 10s
       timeout: 5s
       retries: 10
