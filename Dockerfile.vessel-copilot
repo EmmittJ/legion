@@ -31,9 +31,16 @@ RUN set -eux; \
     && rm -f /tmp/beads.tar.gz /tmp/bd 2>/dev/null; true
 
 # Copilot CLI — ACP server (copilot --acp --stdio)
-# https://docs.github.com/en/copilot/reference/copilot-cli-reference/acp-server
-RUN curl -fsSL https://github.com/github/copilot-cli/releases/latest/download/copilot-linux-amd64 \
-    -o /usr/local/bin/copilot && chmod +x /usr/local/bin/copilot
+RUN set -eux; \
+    COPILOT_VER=$(curl -fsSL https://api.github.com/repos/github/copilot-cli/releases/latest \
+        | grep '"tag_name"' | sed 's/.*"v\([^"]*\)".*/\1/'); \
+    curl -fsSL "https://github.com/github/copilot-cli/releases/download/v${COPILOT_VER}/copilot-linux-x64.tar.gz" \
+        -o /tmp/copilot.tar.gz \
+    && mkdir -p /tmp/copilot-extract \
+    && tar -xzf /tmp/copilot.tar.gz -C /tmp/copilot-extract \
+    && find /tmp/copilot-extract -type f -name 'copilot' -exec mv {} /usr/local/bin/copilot \; \
+    && chmod +x /usr/local/bin/copilot \
+    && rm -rf /tmp/copilot.tar.gz /tmp/copilot-extract
 
 # Vessel Driver — ACP client; reads ISSUE_ID, drives Copilot via JSON-RPC over stdio
 COPY vessel-driver /usr/local/bin/vessel-driver
