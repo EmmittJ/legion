@@ -1,0 +1,44 @@
+name: Vessel Image
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-push:
+    name: Build and Push Vessel Image
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Cross-compile vessel-driver for Linux
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o vessel-driver ./cmd/vessel-driver
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push vessel image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile.vessel-copilot
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/vessel-copilot:latest
+            ghcr.io/${{ github.repository }}/vessel-copilot:${{ github.sha }}
