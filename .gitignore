@@ -5,3 +5,6 @@
 
 # Compiled Windows binaries
 *.exe
+
+# Local environment — contains secrets; never commit
+.env
