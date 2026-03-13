@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os/exec"
 	"sync"
 	"sync/atomic"
@@ -202,8 +203,8 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 	}
 }
 
-// Initialize sends InitializeRequest and returns the protocol version.
-func (c *Client) Initialize() (int, error) {
+// Initialize sends InitializeRequest and returns the protocol version and server capabilities.
+func (c *Client) Initialize() (int, map[string]any, error) {
 	ctx, cancel := context.WithTimeout(c.ctx, defaultRequestTimeout)
 	defer cancel()
 
@@ -212,19 +213,27 @@ func (c *Client) Initialize() (int, error) {
 		"capabilities":    map[string]any{},
 	}
 
+	slog.Info("sent initialize request")
 	result, err := c.call(ctx, "initialize", params)
 	if err != nil {
-		return 0, fmt.Errorf("acp: initialize: %w", err)
+		return 0, nil, fmt.Errorf("acp: initialize: %w", err)
 	}
 
 	var initResult struct {
-		ProtocolVersion int `json:"protocolVersion"`
+		ProtocolVersion int            `json:"protocolVersion"`
+		Capabilities    map[string]any `json:"agentCapabilities"`
 	}
 	if err := json.Unmarshal(result, &initResult); err != nil {
-		return 0, fmt.Errorf("acp: parse initialize result: %w", err)
+		return 0, nil, fmt.Errorf("acp: parse initialize result: %w", err)
 	}
 
-	return initResult.ProtocolVersion, nil
+	capabilities := initResult.Capabilities
+	if capabilities == nil {
+		capabilities = map[string]any{}
+	}
+	slog.Info(fmt.Sprintf("received initialize response with %d capabilities", len(capabilities)))
+
+	return initResult.ProtocolVersion, capabilities, nil
 }
 
 // NewSession creates a new ACP session and returns the session ID.

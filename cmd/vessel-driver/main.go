@@ -162,6 +162,7 @@ func main() {
 	_, acpInitSpan := tracer.Start(ctx, "legion.vessel.acp.initialize",
 		trace.WithAttributes(attribute.String("model", model)),
 	)
+	slog.InfoContext(ctx, "starting ACP session", "model", model)
 	client, err := acp.New(ctx, model)
 	if err != nil {
 		acpInitSpan.RecordError(err)
@@ -173,7 +174,7 @@ func main() {
 	}
 	defer client.Close()
 
-	protocolVersion, err := client.Initialize()
+	protocolVersion, capabilities, err := client.Initialize()
 	if err != nil {
 		acpInitSpan.RecordError(err)
 		acpInitSpan.SetStatus(codes.Error, err.Error())
@@ -183,7 +184,7 @@ func main() {
 		die("acp.Initialize failed", err)
 	}
 	acpInitSpan.End()
-	slog.InfoContext(ctx, "ACP handshake OK", "protocol_version", protocolVersion)
+	slog.InfoContext(ctx, "ACP handshake OK", "protocol_version", protocolVersion, "capabilities_count", len(capabilities))
 	_ = tw.WriteJSON("ACP", map[string]any{
 		"event": "initialize",
 		"protocol_version": protocolVersion,
