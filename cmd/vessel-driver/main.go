@@ -399,9 +399,11 @@ func bdShow(id string) (*issueCore, error) {
 	return &items[0], nil
 }
 
-// markFailed marks an issue as failed with a reason. Errors are logged but not fatal.
+// markFailed marks an issue blocked with a "failed" label and appends a reason note.
+// Beads uses "blocked" as the terminal-error status; the "failed" label distinguishes
+// error-exits from genuine dependency blocks.
 func markFailed(issueID, reason string) {
-	if err := runCmd("", "bd", "update", issueID, "--status=failed", "--append-notes="+reason); err != nil {
+	if err := runCmd("", "bd", "update", issueID, "--status=blocked", "--add-label", "failed", "--append-notes="+reason); err != nil {
 		slog.Warn("could not mark issue failed", "issue_id", issueID, "err", err)
 	}
 }

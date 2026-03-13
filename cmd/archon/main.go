@@ -166,10 +166,11 @@ func markDone(ctx context.Context, issueID string) {
 	}
 }
 
-// markError marks an issue blocked in Beads and appends a reason note.
-// "failed" is not a valid Beads status; blocked is the correct terminal-error state.
+// markError marks an issue blocked with a "failed" label and appends a reason note.
+// "blocked" is the terminal-error status in Beads; "failed" label distinguishes
+// error-exits from genuine dependency blocks or timeouts.
 func markError(ctx context.Context, issueID, reason string) {
-	if _, err := run("bd", "update", issueID, "--status=blocked", "--append-notes", reason); err != nil {
+	if _, err := run("bd", "update", issueID, "--status=blocked", "--add-label", "failed", "--append-notes", reason); err != nil {
 		slog.ErrorContext(ctx, "marking issue blocked", "issue_id", issueID, "err", err)
 	}
 }
