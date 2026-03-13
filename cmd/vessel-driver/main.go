@@ -449,16 +449,21 @@ func setupGitCredentials(token string) error {
 	return nil
 }
 
-// initBeads runs `bd init --quiet` then pulls current issue data from the
-// remote. Must be called from inside the cloned repo (dir) so that bd finds
-// the committed .beads/metadata.json and wires up to existing Dolt history —
-// no "no common ancestor" error because it joins existing history rather than
-// creating a new empty DB.
+// initBeads initialises Beads from inside the cloned repo.
+// In a container stdin is non-TTY so bd init's interactive role prompt is
+// skipped automatically — no flags or git config needed.
 func initBeads(dir string) error {
+	repoURL := os.Getenv("REPO_URL")
+	if repoURL == "" {
+		return fmt.Errorf("REPO_URL not set")
+	}
 	if err := runCmd(dir, "bd", "init", "--quiet"); err != nil {
 		return err
 	}
-	// Sync issues from remote. Warn-only: a fresh repo with no upstream history is fine.
+	// Register the Dolt remote so bd dolt pull can reach GitHub.
+	// Ignore errors — remote may already exist on re-runs.
+	_ = runCmd(dir, "bd", "dolt", "remote", "add", "origin", "git+"+repoURL)
+	// Sync issue data. Warn-only on failure.
 	if err := runCmd(dir, "bd", "dolt", "pull"); err != nil {
 		slog.Warn("bd dolt pull failed — continuing", "err", err)
 	}

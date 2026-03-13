@@ -18,8 +18,11 @@ git clone "${REPO_URL}" /workspace
 # Initialize Beads from inside the cloned repo -- bd finds .beads/metadata.json
 # and connects to the existing Dolt history. No common-ancestor problem.
 echo "[archon-init] Initializing Beads..."
+# stdin is non-TTY in a container — bd init --quiet skips all prompts automatically
 cd /workspace && bd init --quiet
-bd dolt pull || echo "[archon-init] Warning: bd dolt pull failed (may be first boot)"
+bd dolt remote add origin "git+${REPO_URL}" 2>/dev/null || true
+bd dolt pull || echo "[archon-init] Warning: bd dolt pull failed"
+echo "[archon-init] Beads initialized."
 echo "[archon-init] Initialization complete. Starting Archon..."
 
 exec /archon
