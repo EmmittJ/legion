@@ -19,6 +19,7 @@ git clone "${REPO_URL}" /workspace
 # and connects to the existing Dolt history. No common-ancestor problem.
 echo "[archon-init] Initializing Beads..."
 cd /workspace && bd init --quiet
+bd dolt pull || echo "[archon-init] Warning: bd dolt pull failed (may be first boot)"
 echo "[archon-init] Initialization complete. Starting Archon..."
 
 exec /archon

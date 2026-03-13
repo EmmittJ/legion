@@ -77,8 +77,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Initialise Beads from inside the cloned repo. Must happen after clone
-	// (needs .beads/metadata.json) and before telemetry (bd show runs next).
+	// Seed the Beads/Dolt database from the remote.
 	if err := initBeads("/workspace"); err != nil {
 		slog.Error("beads init failed", "err", err)
 		os.Exit(1)
@@ -450,11 +449,18 @@ func setupGitCredentials(token string) error {
 	return nil
 }
 
-// initBeads runs `bd init --quiet` from inside the cloned repo at dir.
-// .beads/metadata.json is committed to the repo, so bd init finds it and
-// connects to the existing Dolt history via refs/dolt/data on the remote —
+// initBeads runs `bd init --quiet` then pulls current issue data from the
+// remote. Must be called from inside the cloned repo (dir) so that bd finds
+// the committed .beads/metadata.json and wires up to existing Dolt history —
 // no "no common ancestor" error because it joins existing history rather than
 // creating a new empty DB.
 func initBeads(dir string) error {
-	return runCmd(dir, "bd", "init", "--quiet")
+	if err := runCmd(dir, "bd", "init", "--quiet"); err != nil {
+		return err
+	}
+	// Sync issues from remote. Warn-only: a fresh repo with no upstream history is fine.
+	if err := runCmd(dir, "bd", "dolt", "pull"); err != nil {
+		slog.Warn("bd dolt pull failed — continuing", "err", err)
+	}
+	return nil
 }
