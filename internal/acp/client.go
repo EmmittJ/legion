@@ -19,10 +19,10 @@ const (
 )
 
 type Client struct {
-	ctx     context.Context
-	cmd     *exec.Cmd
-	stdin   io.WriteCloser
-	scanner *bufio.Scanner
+	ctx    context.Context
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	reader io.Reader // stdout of copilot process; read by readLoop via json.Decoder
 
 	mu       sync.Mutex
 	pending  map[int]chan json.RawMessage
@@ -88,9 +88,9 @@ func New(ctx context.Context, model string) (*Client, error) {
 		ctx:      ctx,
 		cmd:      cmd,
 		stdin:    stdin,
-		scanner:  bufio.NewScanner(stdout),
+		reader:   stdout,
 		pending:  make(map[int]chan json.RawMessage),
-		notifyCh: make(chan notification, 64),
+		notifyCh: make(chan notification, 256), // large buffer — Copilot streams many updates
 	}
 
 	go c.readLoop()
@@ -98,25 +98,35 @@ func New(ctx context.Context, model string) (*Client, error) {
 	return c, nil
 }
 
-// readLoop reads NDJSON lines from copilot stdout and dispatches them.
+// readLoop reads NDJSON from copilot stdout and dispatches messages.
+// Uses json.NewDecoder (not bufio.Scanner) so there is no line-length
+// ceiling — Copilot can send arbitrarily large session/update payloads.
 func (c *Client) readLoop() {
-	for c.scanner.Scan() {
-		line := c.scanner.Bytes()
-		if len(line) == 0 {
+	dec := json.NewDecoder(bufio.NewReaderSize(c.reader, 1<<20)) // 1 MiB read buffer
+	for {
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			if err != io.EOF {
+				slog.Warn("acp: readLoop exiting", "err", err)
+			}
+			return
+		}
+		if len(raw) == 0 {
 			continue
 		}
 
+		// Peek at the id field to decide: response (has id) or notification (no id).
 		var envelope struct {
 			ID *int `json:"id"`
 		}
-		if err := json.Unmarshal(line, &envelope); err != nil {
+		if err := json.Unmarshal(raw, &envelope); err != nil {
 			continue
 		}
 
 		if envelope.ID == nil {
 			// Notification — no id field.
 			var notif rpcNotification
-			if err := json.Unmarshal(line, &notif); err != nil {
+			if err := json.Unmarshal(raw, &notif); err != nil {
 				continue
 			}
 			select {
@@ -127,23 +137,17 @@ func (c *Client) readLoop() {
 			continue
 		}
 
-		// Response — matched by id.
-		var resp rpcResponse
-		if err := json.Unmarshal(line, &resp); err != nil {
-			continue
-		}
-
+		// Response — dispatch to the waiting caller by id.
 		c.mu.Lock()
-		ch, ok := c.pending[*resp.ID]
+		ch, ok := c.pending[*envelope.ID]
 		if ok {
-			delete(c.pending, *resp.ID)
+			delete(c.pending, *envelope.ID)
 		}
 		c.mu.Unlock()
 
 		if ok {
-			rawLine := make([]byte, len(line))
-			copy(rawLine, line)
-			ch <- rawLine
+			// Send full raw bytes; caller re-parses into rpcResponse.
+			ch <- json.RawMessage(append([]byte(nil), raw...))
 		}
 	}
 }
@@ -316,6 +320,14 @@ func (c *Client) NewSession(cwd string) (string, error) {
 
 // Prompt sends a prompt and streams session/update notifications to onUpdate.
 // Returns the stop reason ("end_turn", "max_tokens", "error").
+//
+// Copilot delivers the stop reason in two possible ways depending on the build:
+//   a) In the session/prompt response result: {"stopReason":"end_turn"}
+//   b) In a session/update notification's update object: {"stopReason":"end_turn"}
+//      followed by a session/prompt response with null/absent result.
+//
+// Both are handled: the loop captures any stopReason seen in notifications and
+// falls back to it when the response result is nil or empty.
 func (c *Client) Prompt(ctx context.Context, sessionID, content string, onUpdate func(update map[string]any)) (string, error) {
 	params := map[string]any{
 		"sessionId": sessionID,
@@ -343,13 +355,33 @@ func (c *Client) Prompt(ctx context.Context, sessionID, content string, onUpdate
 		return "", fmt.Errorf("acp: session/prompt send: %w", err)
 	}
 
+	// capturedStopReason holds the stopReason seen in a session/update
+	// notification.  Some Copilot builds deliver stopReason here instead of
+	// (or in addition to) the session/prompt response result.
+	var capturedStopReason string
+
 	for {
 		select {
 		case notif := <-c.notifyCh:
-			if notif.method == "session/update" && onUpdate != nil {
-				var update map[string]any
-				if err := json.Unmarshal(notif.params, &update); err == nil {
-					onUpdate(update)
+			if notif.method == "session/update" {
+				// Try to capture stopReason from the nested update object.
+				// Shape: {"sessionId":"...","update":{"stopReason":"end_turn",...}}
+				var params struct {
+					Update json.RawMessage `json:"update"`
+				}
+				if err := json.Unmarshal(notif.params, &params); err == nil && len(params.Update) > 0 {
+					var upd struct {
+						StopReason string `json:"stopReason"`
+					}
+					if err := json.Unmarshal(params.Update, &upd); err == nil && upd.StopReason != "" {
+						capturedStopReason = upd.StopReason
+					}
+				}
+				if onUpdate != nil {
+					var m map[string]any
+					if err := json.Unmarshal(notif.params, &m); err == nil {
+						onUpdate(m)
+					}
 				}
 			}
 		case raw := <-ch:
@@ -361,17 +393,30 @@ func (c *Client) Prompt(ctx context.Context, sessionID, content string, onUpdate
 				return "error", fmt.Errorf("acp: prompt error %d: %s", resp.Error.Code, resp.Error.Message)
 			}
 
-			var result struct {
-				StopReason string `json:"stopReason"`
-			}
-			if err := json.Unmarshal(resp.Result, &result); err != nil {
-				return "", fmt.Errorf("acp: parse prompt result: %w", err)
+			// Parse stopReason from the response result when present.
+			if len(resp.Result) > 0 && string(resp.Result) != "null" {
+				var result struct {
+					StopReason string `json:"stopReason"`
+				}
+				if err := json.Unmarshal(resp.Result, &result); err != nil {
+					return "", fmt.Errorf("acp: parse prompt result: %w", err)
+				}
+				if result.StopReason == "error" {
+					return "error", fmt.Errorf("acp: prompt stopped with error")
+				}
+				if result.StopReason != "" {
+					return result.StopReason, nil
+				}
 			}
 
-			if result.StopReason == "error" {
-				return "error", fmt.Errorf("acp: prompt stopped with error")
+			// Result was null/absent — Copilot delivered stopReason via
+			// session/update notifications.  Use what we captured, or default
+			// to end_turn (the server acked completion without an error).
+			if capturedStopReason != "" {
+				return capturedStopReason, nil
 			}
-			return result.StopReason, nil
+			return "end_turn", nil
+
 		case <-ctx.Done():
 			c.mu.Lock()
 			delete(c.pending, id)
