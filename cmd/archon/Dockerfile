@@ -12,9 +12,10 @@ FROM golang:1.26-alpine AS builder
 
 WORKDIR /build
 
-# Copy module manifest first — layer caches dependency downloads separately
+# Copy module manifests first — layer caches dependency downloads separately
 # from source changes, keeping incremental rebuilds fast.
-COPY go.mod ./
+COPY go.mod go.sum ./
+RUN go mod download
 
 # Copy full source and build.
 # -ldflags="-s -w" strips debug symbols and DWARF info (~30% binary size reduction).
@@ -30,11 +31,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Beads CLI — Archon shells out to bd for issue lifecycle management
-# Pinned to v0.59.0: v0.60.0 has a regression where bd init in a fresh clone
-# creates unrelated local state and bd dolt pull fails with "no common ancestor".
-# See: https://github.com/steveyegge/beads/issues/2580
+# v0.60.0+ required for BEADS_DOLT_SERVER_* env var support.
 RUN set -eux; \
-    BD_VER=0.59.0; \
+    BD_VER=0.60.0; \
     curl -fsSL "https://github.com/steveyegge/beads/releases/download/v${BD_VER}/beads_${BD_VER}_linux_amd64.tar.gz" \
         -o /tmp/beads.tar.gz \
     && tar -xzf /tmp/beads.tar.gz -C /tmp \
