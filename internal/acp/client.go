@@ -249,16 +249,6 @@ func (c *Client) NewSession(cwd string) (string, error) {
 
 	params := map[string]any{
 		"cwd": cwd,
-		// mcpServers injects the Beads MCP server into the session so Copilot can
-		// call bd tools directly. Key is "mcpServers" per ACP spec — NOT "tools".
-		"mcpServers": []map[string]any{
-			{
-				"name":    "beads",
-				"command": "bd",
-				"args":    []string{"mcp"},
-				"env":     map[string]string{},
-			},
-		},
 	}
 
 	id := int(c.nextID.Add(1))
@@ -322,9 +312,10 @@ func (c *Client) NewSession(cwd string) (string, error) {
 // Returns the stop reason ("end_turn", "max_tokens", "error").
 //
 // Copilot delivers the stop reason in two possible ways depending on the build:
-//   a) In the session/prompt response result: {"stopReason":"end_turn"}
-//   b) In a session/update notification's update object: {"stopReason":"end_turn"}
-//      followed by a session/prompt response with null/absent result.
+//
+//	a) In the session/prompt response result: {"stopReason":"end_turn"}
+//	b) In a session/update notification's update object: {"stopReason":"end_turn"}
+//	   followed by a session/prompt response with null/absent result.
 //
 // Both are handled: the loop captures any stopReason seen in notifications and
 // falls back to it when the response result is nil or empty.
