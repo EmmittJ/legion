@@ -255,7 +255,7 @@ func main() {
 			attribute.String("type", fmt.Sprintf("%v", update["type"])),
 		))
 		// Log token streaming so we can distinguish "Copilot is working" from "token hung".
-		slog.DebugContext(ctx, "acp update", "update_type", fmt.Sprintf("%v", update["type"]))
+		slog.InfoContext(ctx, "acp update", "update_type", fmt.Sprintf("%v", update["type"]))
 	}
 
 	// Determine prompt timeout — default 5 min, overrideable via VESSEL_TIMEOUT (seconds).

@@ -37,10 +37,11 @@ func main() {
 
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
-	fmt.Fprintln(os.Stderr, "  lg invoke \"<title>\"   — create a new task issue")
-	fmt.Fprintln(os.Stderr, "  lg status              — list open and in-progress issues")
-	fmt.Fprintln(os.Stderr, "  lg log <issue-id>      — show traces for an issue")
-	fmt.Fprintln(os.Stderr, "  lg watch [--interval=N] — live-refreshing status dashboard (default: 3s)")
+	fmt.Fprintln(os.Stderr, "  lg invoke \"<title>\"            — create a new task issue")
+	fmt.Fprintln(os.Stderr, "  lg status                       — list open and in-progress issues")
+	fmt.Fprintln(os.Stderr, "  lg log <issue-id> [--follow]    — print ACP execution traces for an issue;")
+	fmt.Fprintln(os.Stderr, "                                    --follow polls every 2s and tails new lines")
+	fmt.Fprintln(os.Stderr, "  lg watch [--interval=N]         — live-refreshing status dashboard (default: 3s)")
 }
 
 // cmdInvoke creates a new Beads task issue.
@@ -124,21 +125,27 @@ func cmdStatus() {
 	w.Flush()
 }
 
-// cmdLog shows traces/notes for a single issue.
+// cmdLog prints the ACP execution traces (notes field) for a single issue.
 //
-//	lg log <issue-id>
+//	lg log <issue-id> [--follow]
+//
+// Without --follow: fetch once, print, exit.
+// With --follow: print existing lines, then poll every 2 s and tail new lines
+// (detected by line count). Exits cleanly on SIGINT / SIGTERM.
 func cmdLog() {
 	if len(os.Args) < 3 {
 		fmt.Fprintln(os.Stderr, "lg log: issue-id required")
-		fmt.Fprintln(os.Stderr, "  usage: lg log <issue-id>")
+		fmt.Fprintln(os.Stderr, "  usage: lg log <issue-id> [--follow]")
 		os.Exit(1)
 	}
 	issueID := os.Args[2]
 
-	out, err := bdOutput("show", issueID, "--json")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "lg log: %v\n", err)
-		os.Exit(1)
+	// Parse --follow / -f from any remaining arg.
+	follow := false
+	for _, arg := range os.Args[3:] {
+		if arg == "--follow" || arg == "-f" {
+			follow = true
+		}
 	}
 
 	type issueDetail struct {
@@ -150,15 +157,42 @@ func cmdLog() {
 		Notes       string `json:"notes"`
 	}
 
-	// bd show returns a single-element flat array: [{"id":"...","title":"...",...}]
-	var items []issueDetail
-	if err := json.Unmarshal(out, &items); err != nil || len(items) == 0 {
-		// Fallback: print raw JSON if parsing fails or array is empty.
-		fmt.Println(string(out))
-		return
+	// fetchDetail calls bd show <id> --json and returns the parsed issue.
+	fetchDetail := func() (issueDetail, error) {
+		out, err := bdOutput("show", issueID, "--json")
+		if err != nil {
+			return issueDetail{}, err
+		}
+		// bd show returns a single-element flat array: [{"id":"...","title":"...",...}]
+		var items []issueDetail
+		if jsonErr := json.Unmarshal(out, &items); jsonErr != nil || len(items) == 0 {
+			// Fallback: surface raw output so the caller can decide.
+			return issueDetail{}, fmt.Errorf("parse response: %w (raw: %s)", jsonErr, strings.TrimSpace(string(out)))
+		}
+		return items[0], nil
 	}
 
-	detail := items[0]
+	// splitLines trims a trailing newline before splitting so that notes ending
+	// in "\n" don't produce a phantom empty element that would skew line counts.
+	splitLines := func(s string) []string {
+		return strings.Split(strings.TrimRight(s, "\n"), "\n")
+	}
+
+	// printFrom prints lines[from:] to stdout, one per line, and returns the
+	// new total line count.
+	printFrom := func(lines []string, from int) int {
+		for i := from; i < len(lines); i++ {
+			fmt.Println(lines[i])
+		}
+		return len(lines)
+	}
+
+	// ── Initial fetch ─────────────────────────────────────────────────────────
+	detail, err := fetchDetail()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "lg log: %v\n", err)
+		os.Exit(1)
+	}
 
 	fmt.Printf("Issue: %s — %s [%s]\n", detail.ID, detail.Title, detail.Status)
 	if detail.Description != "" {
@@ -167,13 +201,48 @@ func cmdLog() {
 	if detail.Assignee != "" {
 		fmt.Printf("Assigned to: %s\n", detail.Assignee)
 	}
+	fmt.Println()
 
+	seenLines := 0
 	if detail.Notes == "" {
-		fmt.Println("\n(no traces)")
+		if !follow {
+			fmt.Println("(no traces)")
+			return
+		}
+		fmt.Println("(no traces yet — following...)")
+	} else {
+		lines := splitLines(detail.Notes)
+		seenLines = printFrom(lines, 0)
+	}
+
+	if !follow {
 		return
 	}
 
-	fmt.Printf("\nNotes:\n%s\n", detail.Notes)
+	// ── Follow mode ───────────────────────────────────────────────────────────
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-sigCh:
+			return
+		case <-ticker.C:
+			d, pollErr := fetchDetail()
+			if pollErr != nil {
+				// Don't exit — bd may be temporarily unavailable. Log and retry.
+				fmt.Fprintf(os.Stderr, "lg log: poll: %v\n", pollErr)
+				continue
+			}
+			if d.Notes != "" {
+				lines := splitLines(d.Notes)
+				seenLines = printFrom(lines, seenLines)
+			}
+		}
+	}
 }
 
 // cmdWatch runs a live-refreshing terminal dashboard that polls Beads every N

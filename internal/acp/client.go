@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
 	"sync"
 	"sync/atomic"
@@ -80,6 +81,8 @@ func New(ctx context.Context, model string) (*Client, error) {
 		return nil, fmt.Errorf("acp: stdout pipe: %w", err)
 	}
 
+	cmd.Stderr = os.Stderr // route copilot stderr to container stderr; default is /dev/null when stdin/stdout are piped
+
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("acp: start copilot: %w", err)
 	}
@@ -108,6 +111,12 @@ func (c *Client) readLoop() {
 		if err := dec.Decode(&raw); err != nil {
 			if err != io.EOF {
 				slog.Warn("acp: readLoop exiting", "err", err)
+			} else {
+				if exitErr := c.cmd.Wait(); exitErr != nil {
+					slog.Warn("acp: copilot exited with error", "err", exitErr)
+				} else {
+					slog.Info("acp: copilot exited cleanly")
+				}
 			}
 			return
 		}
@@ -165,6 +174,8 @@ func (c *Client) send(id int, method string, params any) error {
 		return fmt.Errorf("acp: marshal request: %w", err)
 	}
 	data = append(data, '\n')
+
+	slog.Info("acp →", "method", method, "id", id, "payload", string(data))
 
 	_, err = c.stdin.Write(data)
 	if err != nil {

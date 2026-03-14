@@ -330,6 +330,7 @@ func pulse(ctx context.Context, cfg config, t *tracker, o *obs) {
 		span.RecordError(err)
 		return
 	}
+	slog.DebugContext(ctx, "pulse: bd ready result", "issues", len(issues))
 
 	spawned := 0
 	for _, iss := range issues {
@@ -363,7 +364,9 @@ func pulse(ctx context.Context, cfg config, t *tracker, o *obs) {
 }
 
 // watch is a single execution of the watcher loop body.
-func watch(ctx context.Context, cfg config, t *tracker, o *obs) {
+// lastHeartbeat tracks when each container last emitted a "still running" log;
+// it is owned by watcherLoop and persists across ticks.
+func watch(ctx context.Context, cfg config, t *tracker, o *obs, lastHeartbeat map[string]time.Time) {
 	ctx, span := o.tracer.Start(ctx, "legion.archon.watcher.tick")
 	defer span.End()
 
@@ -383,6 +386,7 @@ func watch(ctx context.Context, cfg config, t *tracker, o *obs) {
 				))
 				markError(ctx, e.issueID, "vessel container removed before inspection")
 				t.remove(name)
+				delete(lastHeartbeat, name)
 			} else {
 				// Transient error (daemon not responding, etc.) — retry next tick.
 				slog.ErrorContext(ctx, "watcher: inspect failed", "container", name, "err", err)
@@ -401,6 +405,7 @@ func watch(ctx context.Context, cfg config, t *tracker, o *obs) {
 			markDone(ctx, e.issueID)
 			removeContainer(ctx, name)
 			t.remove(name)
+			delete(lastHeartbeat, name)
 
 		case state.Status == "exited":
 			slog.WarnContext(ctx, "vessel exited with error",
@@ -413,6 +418,7 @@ func watch(ctx context.Context, cfg config, t *tracker, o *obs) {
 			markError(ctx, e.issueID, fmt.Sprintf("vessel exited with code %d", state.ExitCode))
 			removeContainer(ctx, name)
 			t.remove(name)
+			delete(lastHeartbeat, name)
 
 		case time.Since(e.startedAt) > cfg.timeout:
 			slog.WarnContext(ctx, "vessel timed out",
@@ -426,6 +432,18 @@ func watch(ctx context.Context, cfg config, t *tracker, o *obs) {
 			}
 			removeContainer(ctx, name)
 			t.remove(name)
+			delete(lastHeartbeat, name)
+
+		default:
+			// Container is still running. Emit a heartbeat log at most once every 30 s.
+			if time.Since(lastHeartbeat[name]) >= 30*time.Second {
+				slog.InfoContext(ctx, "vessel still running",
+					"container", name,
+					"issue_id", e.issueID,
+					"elapsed", time.Since(e.startedAt).Round(time.Second),
+				)
+				lastHeartbeat[name] = time.Now()
+			}
 		}
 	}
 }
@@ -446,12 +464,13 @@ func pulseLoop(ctx context.Context, cfg config, t *tracker, o *obs) {
 func watcherLoop(ctx context.Context, cfg config, t *tracker, o *obs) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
+	lastHeartbeat := make(map[string]time.Time)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			watch(ctx, cfg, t, o)
+			watch(ctx, cfg, t, o, lastHeartbeat)
 		}
 	}
 }
