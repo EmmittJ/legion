@@ -35,7 +35,7 @@ func NewTraceWriter(issueID string) *TraceWriter {
 func (tw *TraceWriter) Write(component, message string) error {
 	timestamp := time.Now().UTC().Format("2006-01-02T15:04:05Z")
 	trace := fmt.Sprintf("[%s] %s: %s", timestamp, component, message)
-	return runCmd("", "bd", "update", tw.issueID, "--append-notes", trace)
+	return runCmd("/workspace", "bd", "update", tw.issueID, "--append-notes", trace)
 }
 
 // WriteJSON appends a structured JSON trace event to the Beads issue.
@@ -49,7 +49,7 @@ func (tw *TraceWriter) WriteJSON(component string, data map[string]any) error {
 		return err
 	}
 	trace := string(raw)
-	return runCmd("", "bd", "update", tw.issueID, "--append-notes", trace)
+	return runCmd("/workspace", "bd", "update", tw.issueID, "--append-notes", trace)
 }
 
 func main() {
@@ -246,7 +246,7 @@ func main() {
 	stopReason, err := client.Prompt(promptCtx, sessionID, promptContent, onUpdate)
 
 	// Step 9/10: Handle prompt completion.
-	if err != nil || stopReason == "error" {
+	if err != nil || stopReason != "end_turn" {
 		var promptErr error
 		if err != nil {
 			promptErr = err
@@ -336,12 +336,17 @@ func main() {
 		"message": "vessel-driver execution completed successfully",
 	})
 	
-	if err := runCmd("", "bd", "close", issueID, "--reason", "completed"); err != nil {
+	if err := runCmd("/workspace", "bd", "close", issueID, "--reason", "completed"); err != nil {
 		beadsCloseSpan.RecordError(err)
 		beadsCloseSpan.SetStatus(codes.Error, err.Error())
 		slog.WarnContext(ctx, "bd close failed — issue may need manual close", "issue_id", issueID, "err", err)
 	}
 	beadsCloseSpan.End()
+
+	// Sync issue state back to the Dolt remote so other agents see the closure.
+	if err := runCmd("/workspace", "bd", "dolt", "push"); err != nil {
+		slog.WarnContext(ctx, "bd dolt push failed — remote may be out of sync", "err", err)
+	}
 
 	// Mark root span successful before deferred End() fires.
 	rootSpan.SetStatus(codes.Ok, "")
@@ -393,8 +398,13 @@ func bdShow(dir, id string) (*issueCore, error) {
 // Beads uses "blocked" as the terminal-error status; the "failed" label distinguishes
 // error-exits from genuine dependency blocks.
 func markFailed(issueID, reason string) {
-	if err := runCmd("", "bd", "update", issueID, "--status=blocked", "--add-label", "failed", "--append-notes="+reason); err != nil {
+	if err := runCmd("/workspace", "bd", "update", issueID, "--status=blocked", "--add-label", "failed", "--append-notes="+reason); err != nil {
 		slog.Warn("could not mark issue failed", "issue_id", issueID, "err", err)
+	}
+	// Push blocked state to Dolt remote before container exits so Archon's watcher
+	// sees the terminal status on the remote and can skip a redundant re-update.
+	if err := runCmd("/workspace", "bd", "dolt", "push"); err != nil {
+		slog.Warn("bd dolt push failed in markFailed — remote may be out of sync", "issue_id", issueID, "err", err)
 	}
 }
 
