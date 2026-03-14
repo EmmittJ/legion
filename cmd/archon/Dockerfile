@@ -30,9 +30,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Beads CLI — Archon shells out to bd for issue lifecycle management
+# Pinned to v0.59.0: v0.60.0 has a regression where bd init in a fresh clone
+# creates unrelated local state and bd dolt pull fails with "no common ancestor".
+# See: https://github.com/steveyegge/beads/issues/2580
 RUN set -eux; \
-    BD_VER=$(curl -fsSL https://api.github.com/repos/steveyegge/beads/releases/latest \
-        | grep '"tag_name"' | sed 's/.*"v\([^"]*\)".*/\1/'); \
+    BD_VER=0.59.0; \
     curl -fsSL "https://github.com/steveyegge/beads/releases/download/v${BD_VER}/beads_${BD_VER}_linux_amd64.tar.gz" \
         -o /tmp/beads.tar.gz \
     && tar -xzf /tmp/beads.tar.gz -C /tmp \

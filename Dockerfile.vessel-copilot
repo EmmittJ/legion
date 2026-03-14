@@ -4,10 +4,18 @@
 # Build:
 #   docker build -f Dockerfile.vessel-copilot -t legion/vessel-copilot:latest .
 #
-# The vessel-driver binary must be present in the build context:
-#   vessel-driver  — built via: CGO_ENABLED=0 GOOS=linux go build ./cmd/vessel-driver
+# vessel-driver is compiled from source in the builder stage — no pre-built binary required.
 # The copilot binary is fetched at image build time from the official release URL.
 
+# ── Stage 1: compile vessel-driver ──────────────────────────────────────────
+FROM golang:1.25-bookworm AS builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /vessel-driver ./cmd/vessel-driver/
+
+# ── Stage 2: runtime image ───────────────────────────────────────────────────
 FROM debian:bookworm-slim
 
 # Install system dependencies in a single layer; clean apt lists to minimize image size
@@ -20,9 +28,13 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Beads CLI — baked in at build time (tarball release)
+# Pinned to v0.60.0: BEADS_DOLT_SERVER_{HOST,PORT,USER} env vars are supported
+# from v0.60.0 onwards, allowing vessel-driver to override config.yaml's server
+# settings so bd points at the containerized Dolt (dolt:3306) instead of the
+# host's 127.0.0.1:3307.  The "no common ancestor" dolt-pull warning exists in
+# both 0.59.0 and 0.60.0 and is non-fatal; the pin to 0.59.0 was misdiagnosed.
 RUN set -eux; \
-    BD_VER=$(curl -fsSL https://api.github.com/repos/steveyegge/beads/releases/latest \
-        | grep '"tag_name"' | sed 's/.*"v\([^"]*\)".*/\1/'); \
+    BD_VER=0.60.0; \
     curl -fsSL "https://github.com/steveyegge/beads/releases/download/v${BD_VER}/beads_${BD_VER}_linux_amd64.tar.gz" \
         -o /tmp/beads.tar.gz \
     && tar -xzf /tmp/beads.tar.gz -C /tmp \
@@ -55,7 +67,7 @@ RUN set -eux; \
     && rm -rf /tmp/copilot.tar.gz /tmp/copilot-extract
 
 # Vessel Driver — ACP client; reads ISSUE_ID, drives Copilot via JSON-RPC over stdio
-COPY vessel-driver /usr/local/bin/vessel-driver
+COPY --from=builder /vessel-driver /usr/local/bin/vessel-driver
 RUN chmod +x /usr/local/bin/vessel-driver
 
 # GitHub CLI — `gh auth setup-git` wires git's credential helper so tokens
