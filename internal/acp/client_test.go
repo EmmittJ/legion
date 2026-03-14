@@ -154,7 +154,7 @@ func TestClient_Initialize(t *testing.T) {
 
 	c := newTestClient(t, "initialize")
 
-	got, err := c.Initialize()
+	got, _, err := c.Initialize()
 	if err != nil {
 		t.Fatalf("Initialize: unexpected error: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestClient_NewSession(t *testing.T) {
 
 	c := newTestClient(t, "new_session")
 
-	if _, err := c.Initialize(); err != nil {
+	if _, _, err := c.Initialize(); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 
@@ -193,7 +193,7 @@ func TestClient_Prompt_EndTurn(t *testing.T) {
 
 	c := newTestClient(t, "prompt_end_turn")
 
-	if _, err := c.Initialize(); err != nil {
+	if _, _, err := c.Initialize(); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	sessionID, err := c.NewSession("/tmp/test-workspace")
@@ -226,7 +226,7 @@ func TestClient_Prompt_Error(t *testing.T) {
 
 	c := newTestClient(t, "prompt_error")
 
-	if _, err := c.Initialize(); err != nil {
+	if _, _, err := c.Initialize(); err != nil {
 		t.Fatalf("Initialize: %v", err)
 	}
 	sessionID, err := c.NewSession("/tmp/test-workspace")
