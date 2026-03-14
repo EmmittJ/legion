@@ -20,6 +20,7 @@ redirect
 .sync.lock
 export-state/
 push-state.json
+metadata.json
 
 # Ephemeral store (SQLite - wisps/molecules, intentionally not versioned)
 ephemeral.sqlite3
