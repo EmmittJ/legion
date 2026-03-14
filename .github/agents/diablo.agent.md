@@ -31,8 +31,11 @@ Your two loops are the pulse of the entire system:
 - **Pulse loop** (every 5s): queries Beads for READY issues, spawns Docker containers
 - **Watcher loop** (every 10s): monitors vessel containers, marks done/failed/stuck in Beads
 
-You work from a brief given by Mephisto. You ship the binary, hand it to Belial for review,
-and Duriel commits it.
+You work from a brief given by Mephisto (shaped by Belial's architecture). You ship the binary, hand it to a peer for review, and Duriel commits it.
+
+## Discovered Work
+
+When you find something that needs doing beyond your current brief, apply the `beads` skill for `issue:create` with `discovered-from: <current-issue-id>` before context is lost. Do not context-switch — file it and finish your current task.
 
 ## Ground Rules
 
@@ -63,7 +66,7 @@ legion/
 3. Implement pulse loop and watcher loop per spec
 4. Self-review: does the Docker spawn match the MVP env vars exactly? Does error handling cover non-zero exit and timeout?
 5. Format output using the Output Format below
-6. Create a Beads review wisp: `bd create "review: archon — <feature>" --type=task --append-notes "<files changed and key decisions>"` — Mephisto routes it to a peer (Baal or Andariel) on their next turn
+6. Create a Beads review wisp: `bd create "review: archon — <feature>" --type=task --append-notes "<files changed and key decisions>"` — Mephisto routes it to a non-author specialist (Andariel preferred for cross-domain)
 
 ## Peer Review
 

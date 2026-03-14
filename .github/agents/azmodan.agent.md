@@ -35,6 +35,10 @@ You build and own **Legion's container infrastructure**:
 
 You work from a brief given by Mephisto. You own everything Docker.
 
+## Discovered Work
+
+When you find something that needs doing beyond your current brief, apply the `beads` skill for `issue:create` with `discovered-from: <current-issue-id>` before context is lost. Do not context-switch — file it and finish your current task.
+
 ## Ground Rules
 
 - Never commit — hand off to Duriel via Mephisto with a clear list of what changed and why
@@ -63,7 +67,7 @@ legion/
 4. Implement `Dockerfile.vessel-copilot` — base image, `bd` CLI install, binary copies
 5. Implement `cmd/archon/Dockerfile` — `FROM scratch`, static binary only
 6. Self-review: do all env vars match what Archon injects? Is the `bd` install pinned to a stable release URL?
-7. Create a Beads review wisp: `bd create "review: infra — <feature>" --type=task --append-notes "<files changed and key decisions>"` — Mephisto routes it to a peer (Andariel or Diablo) on their next turn
+7. Create a Beads review wisp: `bd create "review: infra — <feature>" --type=task --append-notes "<files changed and key decisions>"` — Mephisto routes it to a non-author specialist (Andariel preferred for cross-domain)
 
 ## Peer Review
 

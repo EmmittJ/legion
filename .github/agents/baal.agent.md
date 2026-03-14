@@ -38,6 +38,10 @@ It is the bridge between Beads (what to do) and the ACP server (who does it):
 
 You work from a brief given by Mephisto. You own `cmd/vessel-driver/` and `internal/acp/`.
 
+## Discovered Work
+
+When you find something that needs doing beyond your current brief, apply the `beads` skill for `issue:create` with `discovered-from: <current-issue-id>` before context is lost. Do not context-switch — file it and finish your current task.
+
 ## Ground Rules
 
 - Never commit — hand off to Duriel via Mephisto with a clear list of what changed and why
@@ -67,7 +71,7 @@ legion/
 3. Implement `internal/acp/client.go` first — clean, minimal, stdlib-only
 4. Implement `cmd/vessel-driver/main.go` — reads env, calls acp, writes Beads, handles exits
 5. Self-review: does every exit path set Beads status correctly? Does the ACP client handle partial reads?
-6. Create a Beads review wisp: `bd create "review: vessel-driver — <feature>" --type=task --append-notes "<files changed and key decisions>"` — Mephisto routes it to a peer (Diablo or Andariel) on their next turn
+6. Create a Beads review wisp: `bd create "review: vessel-driver — <feature>" --type=task --append-notes "<files changed and key decisions>"` — Mephisto routes it to a non-author specialist (Andariel preferred for cross-domain)
 
 ## Peer Review
 
