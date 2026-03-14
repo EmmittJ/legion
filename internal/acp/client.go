@@ -256,7 +256,7 @@ func (c *Client) NewSession(cwd string) (string, error) {
 				"name":    "beads",
 				"command": "bd",
 				"args":    []string{"mcp"},
-				"env":     []string{},
+				"env":     map[string]string{},
 			},
 		},
 	}

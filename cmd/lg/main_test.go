@@ -78,32 +78,25 @@ func TestLogNoArgs(t *testing.T) {
 // and tabwriter-formatting logic directly — no live `bd` binary required.
 //
 // This mirrors the logic inside cmdStatus to validate that:
-//   - the issueEntry JSON field names are correct
+//   - the issueCore JSON field names match what `bd list --flat --json` actually returns
 //   - the tabwriter header row includes the required column labels
 func TestStatusHeaderColumns(t *testing.T) {
 	type issueCore struct {
-		ID         string `json:"id"`
-		Title      string `json:"title"`
-		Status     string `json:"status"`
-		AssignedTo string `json:"assigned_to"`
-	}
-	type issueEntry struct {
-		Issue issueCore `json:"issue"`
+		ID       string `json:"id"`
+		Title    string `json:"title"`
+		Status   string `json:"status"`
+		Assignee string `json:"assignee"`
 	}
 
-	raw := `[{"issue":{"id":"TST-001","title":"Build the test harness","status":"open","assigned_to":"andariel"}}]`
+	// bd list --flat --json returns a flat array — no wrapper object.
+	raw := `[{"id":"TST-001","title":"Build the test harness","status":"open","assignee":"andariel"}]`
 
-	var parsed []issueEntry
-	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+	var entries []issueCore
+	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
 		t.Fatalf("unmarshal issue JSON: %v", err)
 	}
-	if len(parsed) != 1 {
-		t.Fatalf("want 1 parsed entry, got %d", len(parsed))
-	}
-
-	entries := make([]issueCore, len(parsed))
-	for i, p := range parsed {
-		entries[i] = p.Issue
+	if len(entries) != 1 {
+		t.Fatalf("want 1 parsed entry, got %d", len(entries))
 	}
 
 	// Reproduce the cmdStatus formatting (mirrors cmd/lg/main.go cmdStatus).
@@ -116,7 +109,7 @@ func TestStatusHeaderColumns(t *testing.T) {
 		if len(title) > 60 {
 			title = title[:57] + "..."
 		}
-		assignedTo := e.AssignedTo
+		assignedTo := e.Assignee
 		if assignedTo == "" {
 			assignedTo = "—"
 		}

@@ -58,7 +58,7 @@ func runFakeServer(role string) {
 		switch req.Method {
 		case "initialize":
 			fmt.Fprintf(os.Stdout,
-				`{"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":1,"serverInfo":{"name":"test"},"capabilities":{}}}`,
+				`{"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":1,"agentInfo":{"name":"test"},"agentCapabilities":{}}}`,
 				id)
 			fmt.Fprintln(os.Stdout)
 
@@ -128,7 +128,7 @@ func newTestClient(t *testing.T, role string) *Client {
 		ctx:      context.Background(),
 		cmd:      cmd,
 		stdin:    stdin,
-		scanner:  bufio.NewScanner(stdout),
+		reader:   stdout,
 		pending:  make(map[int]chan json.RawMessage),
 		notifyCh: make(chan notification, 64),
 	}

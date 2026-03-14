@@ -23,13 +23,15 @@ import (
 
 // config holds all runtime configuration read from environment variables.
 type config struct {
-	repoURL     string
-	vesselImage string
-	githubToken string
-	vesselModel string
-	doltHost    string
-	doltPort    string
-	timeout     time.Duration
+	repoURL       string
+	vesselImage   string
+	githubToken   string
+	vesselModel   string
+	vesselTimeout string // forwarded to vessel containers as VESSEL_TIMEOUT
+	doltHost      string
+	doltPort      string
+	dockerNetwork string // Docker network vessel containers join (must reach dolt)
+	timeout       time.Duration
 }
 
 // entry tracks a running vessel container.
@@ -74,13 +76,67 @@ func (t *tracker) snapshot() map[string]entry {
 	return snap
 }
 
+// addAt records a vessel with an explicit start time — used by reconcile to
+// restore containers that were already running before this Archon process started.
+func (t *tracker) addAt(name, issueID string, startedAt time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.runs[name] = entry{issueID: issueID, startedAt: startedAt}
+}
+
+// reconcile scans for vessel containers that were already running (e.g. from a
+// previous Archon process) and adds them to the tracker so the watcher loop can
+// time them out or clean them up.  It queries only running containers whose names
+// match our naming prefix; containers that have already exited are ignored here
+// and will be cleaned up by the watcher on its first tick if they are in the
+// tracker, or left as stopped cruft otherwise.
+func reconcile(ctx context.Context, t *tracker) {
+	const prefix = "legion-vessel-"
+
+	out, err := run("docker", "ps",
+		"--filter", "name="+prefix,
+		"--filter", "status=running",
+		"--format", "{{.Names}}",
+	)
+	if err != nil {
+		slog.WarnContext(ctx, "reconcile: could not list vessel containers", "err", err)
+		return
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	count := 0
+	for _, name := range lines {
+		name = strings.TrimSpace(name)
+		if name == "" || !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		if t.has(name) {
+			continue
+		}
+		issueID := strings.TrimPrefix(name, prefix)
+		startedAt := time.Now() // conservative fallback
+		if tsOut, err := run("docker", "inspect", name, "--format", "{{.State.StartedAt}}"); err == nil {
+			raw := strings.TrimSpace(string(tsOut))
+			// Docker emits RFC3339Nano; fall back gracefully on parse failure.
+			if ts, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+				startedAt = ts
+			}
+		}
+		t.addAt(name, issueID, startedAt)
+		slog.InfoContext(ctx, "reconcile: tracking pre-existing vessel",
+			"container", name, "issue_id", issueID, "started_at", startedAt)
+		count++
+	}
+	if count > 0 {
+		slog.InfoContext(ctx, "reconcile: recovered vessels", "count", count)
+	}
+}
+
 // obs bundles the OpenTelemetry instruments shared across the pulse and watcher loops.
 type obs struct {
 	tracer         trace.Tracer
 	issuesSpawned  metric.Int64Counter
 	vesselDuration metric.Float64Histogram
 }
-
 
 // The JSON output is a flat array — no wrapping "issue" key.
 type issueItem struct {
@@ -114,14 +170,20 @@ func loadConfig() config {
 			timeout = time.Duration(secs) * time.Second
 		}
 	}
+	network := os.Getenv("DOCKER_NETWORK")
+	if network == "" {
+		network = "legion_legion-net"
+	}
 	return config{
-		repoURL:     os.Getenv("REPO_URL"),
-		vesselImage: os.Getenv("VESSEL_IMAGE"),
-		githubToken: os.Getenv("GITHUB_TOKEN"),
-		vesselModel: os.Getenv("VESSEL_MODEL"),
-		doltHost:    os.Getenv("DOLT_HOST"),
-		doltPort:    os.Getenv("DOLT_PORT"),
-		timeout:     timeout,
+		repoURL:       os.Getenv("REPO_URL"),
+		vesselImage:   os.Getenv("VESSEL_IMAGE"),
+		githubToken:   os.Getenv("GITHUB_TOKEN"),
+		vesselModel:   os.Getenv("VESSEL_MODEL"),
+		vesselTimeout: os.Getenv("VESSEL_TIMEOUT"),
+		doltHost:      os.Getenv("DOLT_HOST"),
+		doltPort:      os.Getenv("DOLT_PORT"),
+		dockerNetwork: network,
+		timeout:       timeout,
 	}
 }
 
@@ -202,20 +264,32 @@ func spawnVessel(ctx context.Context, cfg config, issueID, name string, o *obs) 
 	)
 	defer span.End()
 
-	_, err := run(
-		"docker", "run",
+	args := []string{
+		"run",
 		"--detach",
 		"--name", name,
-		"--network=legion_legion-net",
+		"--network=" + cfg.dockerNetwork,
 		"--add-host=host.docker.internal:host-gateway",
-		"-e", "ISSUE_ID="+issueID,
-		"-e", "REPO_URL="+cfg.repoURL,
-		"-e", "GITHUB_TOKEN="+cfg.githubToken,
-		"-e", "VESSEL_MODEL="+cfg.vesselModel,
-		"-e", "DOLT_HOST="+cfg.doltHost,
-		"-e", "DOLT_PORT="+cfg.doltPort,
-		cfg.vesselImage,
-	)
+		"-e", "ISSUE_ID=" + issueID,
+		"-e", "REPO_URL=" + cfg.repoURL,
+		"-e", "GITHUB_TOKEN=" + cfg.githubToken,
+		"-e", "DOLT_HOST=" + cfg.doltHost,
+		"-e", "DOLT_PORT=" + cfg.doltPort,
+		"-e", "VESSEL_MODEL=" + cfg.vesselModel,
+	}
+	// Forward VESSEL_TIMEOUT only when explicitly set; vessel-driver has its own default.
+	if cfg.vesselTimeout != "" {
+		args = append(args, "-e", "VESSEL_TIMEOUT="+cfg.vesselTimeout)
+	}
+	// Forward observability endpoint so vessel traces land in the same collector.
+	// OTEL_SERVICE_NAME is hardcoded for vessels — not inherited from Archon's env.
+	if ep := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); ep != "" {
+		args = append(args, "-e", "OTEL_EXPORTER_OTLP_ENDPOINT="+ep)
+	}
+	args = append(args, "-e", "OTEL_SERVICE_NAME=legion.vessel-driver")
+	args = append(args, cfg.vesselImage)
+
+	_, err := run("docker", args...)
 	if err != nil {
 		span.RecordError(err)
 		return err
@@ -403,6 +477,10 @@ func main() {
 	t := &tracker{runs: make(map[string]entry)}
 
 	slog.Info("archon starting", "pulse_interval", "5s", "watcher_interval", "10s")
+
+	// Recover any vessel containers that outlived a previous Archon process so the
+	// watcher loop can time them out or clean them up without re-spawning.
+	reconcile(ctx, t)
 
 	go pulseLoop(ctx, cfg, t, o)
 	go watcherLoop(ctx, cfg, t, o)

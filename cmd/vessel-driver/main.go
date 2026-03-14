@@ -211,9 +211,9 @@ func main() {
 	acpInitSpan.End()
 	slog.InfoContext(ctx, "ACP handshake OK", "protocol_version", protocolVersion, "capabilities_count", len(capabilities))
 	_ = tw.WriteJSON("ACP", map[string]any{
-		"event": "initialize",
+		"event":            "initialize",
 		"protocol_version": protocolVersion,
-		"status": "ok",
+		"status":           "ok",
 	})
 
 	// Step 7: New session.
@@ -230,10 +230,10 @@ func main() {
 	acpSessionSpan.End()
 	slog.InfoContext(ctx, "ACP session ready", "session_id", sessionID)
 	_ = tw.WriteJSON("ACP", map[string]any{
-		"event": "session/new",
+		"event":      "session/new",
 		"session_id": sessionID,
-		"cwd": "/workspace",
-		"status": "ready",
+		"cwd":        "/workspace",
+		"status":     "ready",
 	})
 
 	// Step 8: Prompt with issue content.
@@ -245,9 +245,9 @@ func main() {
 
 	// Write the prompt to Beads for visibility.
 	_ = tw.WriteJSON("ACP", map[string]any{
-		"event": "prompt/request",
+		"event":        "prompt/request",
 		"user_message": promptContent,
-		"session_id": sessionID,
+		"session_id":   sessionID,
 	})
 
 	onUpdate := func(update map[string]any) {
@@ -283,8 +283,8 @@ func main() {
 		acpPromptSpan.SetStatus(codes.Error, promptErr.Error())
 		acpPromptSpan.End()
 		_ = tw.WriteJSON("ACP", map[string]any{
-			"event": "prompt/error",
-			"error": promptErr.Error(),
+			"event":       "prompt/error",
+			"error":       promptErr.Error(),
 			"stop_reason": stopReason,
 		})
 		markFailed(issueID, "ACP error")
@@ -294,9 +294,9 @@ func main() {
 	acpPromptSpan.End()
 	slog.InfoContext(ctx, "prompt complete", "stop_reason", stopReason)
 	_ = tw.WriteJSON("ACP", map[string]any{
-		"event": "prompt/response",
+		"event":       "prompt/response",
 		"stop_reason": stopReason,
-		"status": "ok",
+		"status":      "ok",
 	})
 
 	// Steps 9a–9c: git add + commit + push.
@@ -350,16 +350,16 @@ func main() {
 	_, beadsCloseSpan := tracer.Start(ctx, "legion.vessel.beads.close",
 		trace.WithAttributes(attribute.String("issue.id", issueID)),
 	)
-	
+
 	// Write final success status
 	_ = tw.WriteJSON("VESSEL", map[string]any{
-		"event": "completion",
-		"status": "success",
-		"branch": branch,
+		"event":       "completion",
+		"status":      "success",
+		"branch":      branch,
 		"stop_reason": stopReason,
-		"message": "vessel-driver execution completed successfully",
+		"message":     "vessel-driver execution completed successfully",
 	})
-	
+
 	if err := runCmd("/workspace", "bd", "close", issueID, "--reason", "completed"); err != nil {
 		beadsCloseSpan.RecordError(err)
 		beadsCloseSpan.SetStatus(codes.Error, err.Error())
@@ -497,4 +497,3 @@ func patchBeadsConfig(path, host, port string) error {
 	slog.Info("patched beads config", "path", path, "dolt_host", host, "dolt_port", port)
 	return nil
 }
-

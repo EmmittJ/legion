@@ -85,4 +85,16 @@ RUN set -eux; \
 
 WORKDIR /app
 
-ENTRYPOINT ["/usr/local/bin/vessel-driver"]
+# Entrypoint wrapper: translate DOLT_HOST/DOLT_PORT → BEADS_DOLT_SERVER_HOST/PORT
+# so that every bd subcommand in the vessel (including those called by vessel-driver)
+# finds the containerized Dolt on dolt:3306 instead of the config.yaml default.
+# bd v0.60.0+ honours BEADS_DOLT_SERVER_HOST/PORT at startup.
+RUN { \
+      echo '#!/bin/sh'; \
+      echo 'export BEADS_DOLT_SERVER_HOST="${DOLT_HOST:-dolt}"'; \
+      echo 'export BEADS_DOLT_SERVER_PORT="${DOLT_PORT:-3306}"'; \
+      echo 'exec /usr/local/bin/vessel-driver "$@"'; \
+    } > /usr/local/bin/vessel-entrypoint.sh \
+    && chmod +x /usr/local/bin/vessel-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/vessel-entrypoint.sh"]

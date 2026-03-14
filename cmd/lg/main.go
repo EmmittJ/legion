@@ -54,7 +54,7 @@ func cmdInvoke() {
 	}
 	title := os.Args[2]
 
-	out, err := bdOutput("create", title, "--type=task", "--json")
+	out, err := bdOutput("create", title, "--type=task", "--description="+title, "--json")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "lg invoke: %v\n", err)
 		os.Exit(1)
@@ -77,10 +77,10 @@ func cmdInvoke() {
 //	lg status
 func cmdStatus() {
 	type issueCore struct {
-		ID         string `json:"id"`
-		Title      string `json:"title"`
-		Status     string `json:"status"`
-		AssignedTo string `json:"assigned_to"`
+		ID       string `json:"id"`
+		Title    string `json:"title"`
+		Status   string `json:"status"`
+		Assignee string `json:"assignee"`
 	}
 
 	var allIssues []issueCore
@@ -111,7 +111,7 @@ func cmdStatus() {
 	fmt.Fprintln(w, "ID\tTITLE\tSTATUS\tASSIGNED_TO")
 	fmt.Fprintln(w, "──\t─────\t──────\t───────────")
 	for _, iss := range allIssues {
-		assignedTo := iss.AssignedTo
+		assignedTo := iss.Assignee
 		if assignedTo == "" {
 			assignedTo = "—"
 		}
@@ -141,18 +141,13 @@ func cmdLog() {
 		os.Exit(1)
 	}
 
-	type noteEntry struct {
-		Timestamp string `json:"timestamp"`
-		Content   string `json:"content"`
-	}
 	type issueDetail struct {
-		ID          string      `json:"id"`
-		Title       string      `json:"title"`
-		Status      string      `json:"status"`
-		Description string      `json:"description"`
-		AssignedTo  string      `json:"assigned_to"`
-		Notes       []noteEntry `json:"notes"`
-		Traces      []noteEntry `json:"traces"`
+		ID          string `json:"id"`
+		Title       string `json:"title"`
+		Status      string `json:"status"`
+		Description string `json:"description"`
+		Assignee    string `json:"assignee"`
+		Notes       string `json:"notes"`
 	}
 
 	// bd show returns a single-element flat array: [{"id":"...","title":"...",...}]
@@ -169,29 +164,16 @@ func cmdLog() {
 	if detail.Description != "" {
 		fmt.Printf("Description: %s\n", detail.Description)
 	}
-	if detail.AssignedTo != "" {
-		fmt.Printf("Assigned to: %s\n", detail.AssignedTo)
+	if detail.Assignee != "" {
+		fmt.Printf("Assigned to: %s\n", detail.Assignee)
 	}
 
-	entries := detail.Notes
-	if len(entries) == 0 && len(detail.Traces) > 0 {
-		// Use traces field if notes is empty.
-		entries = append(entries, detail.Traces...)
-	}
-
-	if len(entries) == 0 {
+	if detail.Notes == "" {
 		fmt.Println("\n(no traces)")
 		return
 	}
 
-	fmt.Printf("\nTraces (%d):\n", len(entries))
-	for i, entry := range entries {
-		ts := entry.Timestamp
-		if ts == "" {
-			ts = "—"
-		}
-		fmt.Printf("  [%d] %s  %s\n", i+1, ts, entry.Content)
-	}
+	fmt.Printf("\nNotes:\n%s\n", detail.Notes)
 }
 
 // cmdWatch runs a live-refreshing terminal dashboard that polls Beads every N
@@ -219,10 +201,10 @@ func cmdWatch() {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
 	type issueCore struct {
-		ID         string `json:"id"`
-		Title      string `json:"title"`
-		Status     string `json:"status"`
-		AssignedTo string `json:"assigned_to"`
+		ID       string `json:"id"`
+		Title    string `json:"title"`
+		Status   string `json:"status"`
+		Assignee string `json:"assignee"`
 	}
 
 	// truncate returns s truncated to at most n runes, with "…" appended when
@@ -277,7 +259,7 @@ func cmdWatch() {
 			fmt.Println("  (none)")
 		default:
 			for _, iss := range active {
-				assignedTo := iss.AssignedTo
+				assignedTo := iss.Assignee
 				if assignedTo == "" {
 					assignedTo = "—"
 				}
