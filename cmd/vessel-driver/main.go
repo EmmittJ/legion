@@ -309,6 +309,7 @@ func main() {
 	doltHost := requireEnv("DOLT_HOST")
 	doltPort := requireEnv("DOLT_PORT")
 	model := os.Getenv("VESSEL_MODEL")
+	agentName := os.Getenv("LEGION_AGENT")
 
 	// Configure git credential store so the token never appears in remote URLs
 	// or log output.  Must happen before any git operation.
@@ -424,6 +425,20 @@ func main() {
 	checkoutSpan.End()
 	_ = tw.Write("GIT", fmt.Sprintf("checked out branch %s", branch))
 
+	// Agent identity check: if LEGION_AGENT is set the agent file must exist
+	// inside the cloned repo before we spend time starting Copilot.
+	if agentName != "" {
+		agentFile := "/workspace/.github/agents/" + agentName + ".agent.md"
+		if _, statErr := os.Stat(agentFile); statErr != nil {
+			reason := "agent file not found: " + agentName
+			if !os.IsNotExist(statErr) {
+				reason = "agent file unreadable: " + statErr.Error()
+			}
+			markFailed(issueID, reason)
+			die("agent file check failed", statErr)
+		}
+	}
+
 	// Steps 5+6: Start ACP server and perform protocol handshake.
 	// IMPORTANT: copilot --acp --stdio authenticates via GH_TOKEN (set above by
 	// setupGitCredentials).  The token MUST have the "copilot" OAuth scope.
@@ -435,10 +450,13 @@ func main() {
 	)
 	slog.InfoContext(ctx, "starting ACP session", "model", model)
 
-	// Build argument list — --model is optional.
+	// Build argument list — --model and --agent are optional.
 	acpArgs := []string{"--acp", "--stdio"}
 	if model != "" {
 		acpArgs = append(acpArgs, "--model", model)
+	}
+	if agentName != "" {
+		acpArgs = append(acpArgs, "--agent", agentName)
 	}
 
 	// Spawn copilot with stderr forwarded to our container stderr for
@@ -776,6 +794,17 @@ func execOutput(dir, name string, args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("%s %v: %w", name, args, err)
 	}
 	return out, nil
+}
+
+// issueMode returns "review" or "work" based on issue labels.
+// Used in Phase 2 (lg-b47) to dispatch Inquisitor review sessions.
+func issueMode(labels []string) string {
+	for _, l := range labels {
+		if l == "type:review" {
+			return "review"
+		}
+	}
+	return "work"
 }
 
 // setupGitCredentials configures git's credential helper via `gh auth setup-git`

@@ -157,6 +157,28 @@ func isInfraIssue(iss issueItem) bool {
 	return false
 }
 
+// isEscalatedIssue returns true for issues that have been escalated to human review.
+// Archon must never spawn vessels for escalated issues.
+func isEscalatedIssue(iss issueItem) bool {
+	for _, l := range iss.Labels {
+		if l == "escalate:human" {
+			return true
+		}
+	}
+	return false
+}
+
+// agentLabel extracts the agent name from an issue's labels.
+// Returns "" if no agent:<name> label is present.
+func agentLabel(iss issueItem) string {
+	for _, l := range iss.Labels {
+		if strings.HasPrefix(l, "agent:") {
+			return strings.TrimPrefix(l, "agent:")
+		}
+	}
+	return ""
+}
+
 type containerState struct {
 	Status   string `json:"Status"`
 	ExitCode int    `json:"ExitCode"`
@@ -255,11 +277,12 @@ func markBlocked(ctx context.Context, issueID, note string) {
 	}
 }
 
-func spawnVessel(ctx context.Context, cfg config, issueID, name string, o *obs) error {
+func spawnVessel(ctx context.Context, cfg config, issueID, name, agentName string, o *obs) error {
 	ctx, span := o.tracer.Start(ctx, "legion.archon.vessel.spawn",
 		trace.WithAttributes(
 			attribute.String("issue.id", issueID),
 			attribute.String("container.name", name),
+			attribute.String("vessel.agent", agentName),
 		),
 	)
 	defer span.End()
@@ -280,6 +303,13 @@ func spawnVessel(ctx context.Context, cfg config, issueID, name string, o *obs) 
 	// Forward VESSEL_TIMEOUT only when explicitly set; vessel-driver has its own default.
 	if cfg.vesselTimeout != "" {
 		args = append(args, "-e", "VESSEL_TIMEOUT="+cfg.vesselTimeout)
+	}
+	// Inject agent routing label so the vessel-driver knows which agent to use.
+	if agentName != "" {
+		args = append(args, "-e", "LEGION_AGENT="+agentName)
+	}
+	if v := os.Getenv("LEGION_MAX_REWORK"); v != "" {
+		args = append(args, "-e", "LEGION_MAX_REWORK="+v)
 	}
 	// Forward observability endpoint so vessel traces land in the same collector.
 	// OTEL_SERVICE_NAME is hardcoded for vessels — not inherited from Archon's env.
@@ -338,6 +368,11 @@ func pulse(ctx context.Context, cfg config, t *tracker, o *obs) {
 			slog.DebugContext(ctx, "pulse: skipping infra issue", "issue_id", iss.ID, "labels", iss.Labels)
 			continue
 		}
+		if isEscalatedIssue(iss) {
+			slog.InfoContext(ctx, "pulse: skipping escalated issue — human intervention required",
+				"issue_id", iss.ID, "labels", iss.Labels)
+			continue
+		}
 		name := containerName(iss.ID)
 		if t.has(name) {
 			continue
@@ -347,13 +382,14 @@ func pulse(ctx context.Context, cfg config, t *tracker, o *obs) {
 			slog.ErrorContext(ctx, "claim issue (skipping)", "issue_id", iss.ID, "err", err)
 			continue
 		}
-		if err := spawnVessel(ctx, cfg, iss.ID, name, o); err != nil {
+		agent := agentLabel(iss)
+		if err := spawnVessel(ctx, cfg, iss.ID, name, agent, o); err != nil {
 			slog.ErrorContext(ctx, "spawning vessel", "issue_id", iss.ID, "err", err)
 			markError(ctx, iss.ID, fmt.Sprintf("spawn failed: %v", err))
 			continue
 		}
 		t.add(name, iss.ID)
-		slog.InfoContext(ctx, "spawned vessel", "container", name, "issue_id", iss.ID)
+		slog.InfoContext(ctx, "spawned vessel", "container", name, "issue_id", iss.ID, "agent", agent)
 		spawned++
 	}
 

@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -37,25 +39,68 @@ func main() {
 
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
-	fmt.Fprintln(os.Stderr, "  lg invoke \"<title>\"            — create a new task issue")
-	fmt.Fprintln(os.Stderr, "  lg status                       — list open and in-progress issues")
-	fmt.Fprintln(os.Stderr, "  lg log <issue-id> [--follow]    — print ACP execution traces for an issue;")
-	fmt.Fprintln(os.Stderr, "                                    --follow polls every 2s and tails new lines")
-	fmt.Fprintln(os.Stderr, "  lg watch [--interval=N]         — live-refreshing status dashboard (default: 3s)")
+	fmt.Fprintln(os.Stderr, "  lg invoke \"<title>\" [--agent <name>]  — create a new task issue; optionally")
+	fmt.Fprintln(os.Stderr, "                                           route to a known agent by name")
+	fmt.Fprintln(os.Stderr, "  lg status                               — list open and in-progress issues")
+	fmt.Fprintln(os.Stderr, "  lg log <issue-id> [--follow]            — print ACP execution traces for an issue;")
+	fmt.Fprintln(os.Stderr, "                                           --follow polls every 2s and tails new lines")
+	fmt.Fprintln(os.Stderr, "  lg watch [--interval=N]                 — live-refreshing status dashboard (default: 3s)")
 }
 
 // cmdInvoke creates a new Beads task issue.
 //
-//	lg invoke "Fix the login bug"
+//	lg invoke "Fix the login bug" [--agent <name>]
 func cmdInvoke() {
 	if len(os.Args) < 3 {
 		fmt.Fprintln(os.Stderr, "lg invoke: title required")
-		fmt.Fprintln(os.Stderr, "  usage: lg invoke \"<title>\"")
+		fmt.Fprintln(os.Stderr, "  usage: lg invoke \"<title>\" [--agent <name>]")
 		os.Exit(1)
 	}
 	title := os.Args[2]
 
-	out, err := bdOutput("create", title, "--type=task", "--description="+title, "--json")
+	// Parse --agent <name> or --agent=<name> from remaining args.
+	agentName := ""
+	rest := os.Args[3:]
+	for i := 0; i < len(rest); i++ {
+		switch {
+		case rest[i] == "--agent":
+			if i+1 >= len(rest) {
+				fmt.Fprintln(os.Stderr, "lg invoke: --agent requires a value")
+				fmt.Fprintln(os.Stderr, "  usage: lg invoke \"<title>\" --agent <name>")
+				os.Exit(1)
+			}
+			agentName = rest[i+1]
+			i++ // consume value
+		case strings.HasPrefix(rest[i], "--agent="):
+			agentName = strings.TrimPrefix(rest[i], "--agent=")
+		default:
+			fmt.Fprintf(os.Stderr, "lg invoke: unknown flag %q\n", rest[i])
+			os.Exit(1)
+		}
+	}
+
+	// Validate agent BEFORE touching Beads.
+	if agentName != "" {
+		known, err := discoverAgents()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "lg invoke: could not discover agents: %v\n", err)
+			os.Exit(1)
+		}
+		if !slices.Contains(known, agentName) {
+			fmt.Fprintf(os.Stderr, "lg invoke: unknown agent %q\n", agentName)
+			fmt.Fprintf(os.Stderr, "  known agents: %s\n", strings.Join(known, ", "))
+			os.Exit(1)
+		}
+	}
+
+	// Build the bd create arg list.
+	bdArgs := []string{"create", title, "--type=task", "--description=" + title}
+	if agentName != "" {
+		bdArgs = append(bdArgs, "--labels", "agent:"+agentName)
+	}
+	bdArgs = append(bdArgs, "--json")
+
+	out, err := bdOutput(bdArgs...)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "lg invoke: %v\n", err)
 		os.Exit(1)
@@ -409,6 +454,35 @@ func cmdWatch() {
 			paint()
 		}
 	}
+}
+
+// gitRoot returns the absolute path to the repository root by running
+// git rev-parse --show-toplevel.
+func gitRoot() (string, error) {
+	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse --show-toplevel: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// discoverAgents returns the list of agent names found in
+// <repo-root>/.github/agents/*.agent.md.
+func discoverAgents() ([]string, error) {
+	root, err := gitRoot()
+	if err != nil {
+		return nil, err
+	}
+	matches, err := filepath.Glob(filepath.Join(root, ".github", "agents", "*.agent.md"))
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, m := range matches {
+		base := filepath.Base(m)
+		names = append(names, strings.TrimSuffix(base, ".agent.md"))
+	}
+	return names, nil
 }
 
 // bdOutput runs a bd subcommand and returns stdout.
