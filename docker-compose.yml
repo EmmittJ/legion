@@ -58,6 +58,7 @@ services:
       # Archon's entrypoint and all bd subprocesses will find dolt:3306 via these vars.
       - BEADS_DOLT_SERVER_HOST=dolt
       - BEADS_DOLT_SERVER_PORT=3306
+      - VESSEL_TIMEOUT=900
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
       - OTEL_SERVICE_NAME=legion.archon
     volumes:
