@@ -84,9 +84,21 @@ type obs struct {
 
 // The JSON output is a flat array — no wrapping "issue" key.
 type issueItem struct {
-	ID     string `json:"id"`
-	Title  string `json:"title"`
-	Status string `json:"status"`
+	ID     string   `json:"id"`
+	Title  string   `json:"title"`
+	Status string   `json:"status"`
+	Labels []string `json:"labels"`
+}
+
+// isInfraIssue returns true for issues that carry infrastructure labels
+// (role definitions, agent definitions). Archon must never spawn vessels for these.
+func isInfraIssue(iss issueItem) bool {
+	for _, l := range iss.Labels {
+		if l == "gt:role" || l == "gt:agent" {
+			return true
+		}
+	}
+	return false
 }
 
 type containerState struct {
@@ -247,6 +259,10 @@ func pulse(ctx context.Context, cfg config, t *tracker, o *obs) {
 
 	spawned := 0
 	for _, iss := range issues {
+		if isInfraIssue(iss) {
+			slog.DebugContext(ctx, "pulse: skipping infra issue", "issue_id", iss.ID, "labels", iss.Labels)
+			continue
+		}
 		name := containerName(iss.ID)
 		if t.has(name) {
 			continue
