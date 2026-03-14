@@ -209,8 +209,9 @@ func (c *Client) Initialize() (int, map[string]any, error) {
 	defer cancel()
 
 	params := map[string]any{
-		"protocolVersion": acpProtocolVersion,
-		"capabilities":    map[string]any{},
+		"protocolVersion":    acpProtocolVersion,
+		"clientInfo":         map[string]any{"name": "vessel-driver", "version": "0.1.0"},
+		"clientCapabilities": map[string]any{},
 	}
 
 	slog.Info("sent initialize request")
@@ -244,12 +245,14 @@ func (c *Client) NewSession(cwd string) (string, error) {
 
 	params := map[string]any{
 		"cwd": cwd,
-		"tools": []map[string]any{
+		// mcpServers injects the Beads MCP server into the session so Copilot can
+		// call bd tools directly. Key is "mcpServers" per ACP spec — NOT "tools".
+		"mcpServers": []map[string]any{
 			{
-				"type":    "mcp",
 				"name":    "beads",
 				"command": "bd",
 				"args":    []string{"mcp"},
+				"env":     []string{},
 			},
 		},
 	}
@@ -316,10 +319,12 @@ func (c *Client) NewSession(cwd string) (string, error) {
 func (c *Client) Prompt(ctx context.Context, sessionID, content string, onUpdate func(update map[string]any)) (string, error) {
 	params := map[string]any{
 		"sessionId": sessionID,
-		"messages": []map[string]any{
+		// "prompt" is the ACP spec field — NOT "messages".
+		// Each entry must carry type:"text" and a "text" key.
+		"prompt": []map[string]any{
 			{
-				"role":    "user",
-				"content": content,
+				"type": "text",
+				"text": content,
 			},
 		},
 	}

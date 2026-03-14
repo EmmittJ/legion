@@ -83,6 +83,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Pin BEADS_DIR so every subsequent bd call — including the bd mcp server
+	// spawned by Copilot as a child process — finds the database without
+	// needing the working directory to be /workspace.
+	if err := os.Setenv("BEADS_DIR", "/workspace/.beads"); err != nil {
+		slog.Error("failed to set BEADS_DIR", "err", err)
+		os.Exit(1)
+	}
+
 	ctx := context.Background()
 
 	// Trace writer for appending execution events to Beads issue notes.
@@ -219,22 +227,15 @@ func main() {
 	})
 
 	onUpdate := func(update map[string]any) {
-		raw, marshalErr := json.Marshal(update)
-		if marshalErr != nil {
-			return
-		}
-		note := string(raw)
-		// Best-effort — don't fail the whole operation if a trace write fails.
-		_ = runCmd("", "bd", "update", issueID, "--append-notes", note)
-
-		// Also record as a span event for trace visibility in Jaeger.
+		// Record as a span event for trace visibility in Grafana/Tempo.
+		// Don't write every token to Beads — too chatty; final result is written at completion.
 		acpPromptSpan.AddEvent("acp.update", trace.WithAttributes(
 			attribute.String("type", fmt.Sprintf("%v", update["type"])),
 		))
 	}
 
-	// Determine prompt timeout — default 45 min, overrideable via VESSEL_TIMEOUT (seconds).
-	timeoutSecs := 2700
+	// Determine prompt timeout — default 5 min, overrideable via VESSEL_TIMEOUT (seconds).
+	timeoutSecs := 300
 	if v := os.Getenv("VESSEL_TIMEOUT"); v != "" {
 		if n, parseErr := strconv.Atoi(v); parseErr == nil {
 			timeoutSecs = n

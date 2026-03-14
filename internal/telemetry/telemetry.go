@@ -60,7 +60,7 @@ func Setup(ctx context.Context, serviceName string) (
 	// ── Trace provider (OTLP HTTP → Jaeger/Tempo) ─────────────────────────────
 	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 	if endpoint == "" {
-		endpoint = "http://localhost:4318"
+		endpoint = "http://host.docker.internal:4318"
 	}
 
 	fmt.Fprintf(os.Stderr, "[TELEMETRY-DEBUG] Building trace opts for endpoint: %s\n", endpoint)
