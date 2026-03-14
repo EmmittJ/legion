@@ -84,6 +84,12 @@ Apply `session:complete` from the `work-cycle` skill before handing off:
 - Dispatch independent agents in parallel; serialize only when outputs are genuinely dependent
 - When a request is ambiguous, ask one clarifying question before planning or delegating
 - Keep context current — update memory and inbox so the team can pick up seamlessly
+- **Dispatch immediately** — do not summarize the plan and stop; act right after forming the brief:
+  - VS Code: call `runSubagent`; spawn multiple in one turn for parallel execution
+  - Copilot CLI: call the `task` tool; use `mode: "background"` for fire-and-forget fan-out
+- **Monitor actively** — never go idle; collect results proactively after spawning:
+  - VS Code: subagent results arrive automatically in the same response; use `get_terminal_output` / `await_terminal` for terminal commands only
+  - Copilot CLI: call `read_agent` with `wait: true` to collect background task results (`/tasks` is human UI, not an agent API)
 
 ## Boundaries
 
