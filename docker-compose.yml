@@ -109,6 +109,19 @@ services:
     networks:
       - legion-net
 
+  promtail:
+    image: grafana/promtail:2.9.10
+    command: ["-config.file=/etc/promtail/config.yaml"]
+    volumes:
+      - ./observability/promtail.yaml:/etc/promtail/config.yaml:ro
+      # Docker socket — read-only; Promtail uses the Docker API to read container logs
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
+    networks:
+      - legion-net
+    restart: unless-stopped
+
   prometheus:
     image: prom/prometheus:latest
     command:
@@ -131,6 +144,7 @@ services:
       - GF_AUTH_DISABLE_LOGIN_FORM=true
     volumes:
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     depends_on:
       - tempo

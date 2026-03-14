@@ -8,12 +8,14 @@
 # The copilot binary is fetched at image build time from the official release URL.
 
 # ── Stage 1: compile vessel-driver ──────────────────────────────────────────
-FROM golang:1.25-bookworm AS builder
+# go-acp requires Go ≥ 1.26.1; all dependencies are vendored so no network
+# access is needed during the build.
+FROM golang:1.26-bookworm AS builder
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+COPY vendor ./vendor
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /vessel-driver ./cmd/vessel-driver/
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=vendor -o /vessel-driver ./cmd/vessel-driver/
 
 # ── Stage 2: runtime image ───────────────────────────────────────────────────
 FROM debian:bookworm-slim

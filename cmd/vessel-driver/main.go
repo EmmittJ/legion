@@ -1,23 +1,270 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	acp "github.com/ironpark/go-acp"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/EmmittJ/legion/internal/acp"
 	"github.com/EmmittJ/legion/internal/telemetry"
 )
+
+// ---------------------------------------------------------------------------
+// vesselClient — implements acp.Client so Copilot can read/write files and
+// run shell commands inside the vessel container.
+// ---------------------------------------------------------------------------
+
+// terminalSession holds a running child process and buffers its combined output.
+type terminalSession struct {
+	cmd      *exec.Cmd
+	mu       sync.Mutex
+	outBuf   bytes.Buffer
+	done     chan struct{}
+	exitCode *int64
+	signal   string
+}
+
+// Write implements io.Writer so terminalSession can be set as cmd.Stdout/Stderr.
+func (s *terminalSession) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.outBuf.Write(p)
+}
+
+// output returns the current buffered combined stdout+stderr.
+func (s *terminalSession) output() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.outBuf.String()
+}
+
+// vesselClient implements acp.Client.  It runs inside a Docker container so
+// all file paths are relative to /workspace and all permissions are
+// auto-approved — there is no interactive user to ask.
+type vesselClient struct {
+	workspace string
+	mu        sync.Mutex
+	terminals map[string]*terminalSession
+}
+
+// SessionUpdate is called for every streaming update Copilot sends while
+// processing a prompt.  We log interesting events at info level and ignore
+// the rest so container stdout stays readable.
+func (c *vesselClient) SessionUpdate(ctx context.Context, params *acp.SessionNotification) error {
+	acp.MatchSessionUpdate(&params.Update, acp.SessionUpdateMatcher[struct{}]{
+		AgentMessageChunk: func(v acp.SessionUpdateAgentMessageChunk) struct{} {
+			if text, ok := v.Content.AsText(); ok && text.Text != "" {
+				slog.DebugContext(ctx, "copilot output", "text", text.Text)
+			}
+			return struct{}{}
+		},
+		ToolCall: func(v acp.SessionUpdateToolCall) struct{} {
+			status := ""
+			if v.Status != nil {
+				status = string(*v.Status)
+			}
+			slog.InfoContext(ctx, "copilot tool call", "title", v.Title, "status", status)
+			return struct{}{}
+		},
+		ToolCallUpdate: func(v acp.SessionUpdateToolCallUpdate) struct{} {
+			status := ""
+			if v.Status != nil {
+				status = string(*v.Status)
+			}
+			slog.InfoContext(ctx, "copilot tool update", "id", string(v.ToolCallID), "status", status)
+			return struct{}{}
+		},
+		Default: func() struct{} { return struct{}{} },
+	})
+	return nil
+}
+
+// RequestPermission auto-approves every tool call.  The vessel is a
+// short-lived, sandboxed Docker container — there is no user to prompt and
+// every action is intentional.
+func (c *vesselClient) RequestPermission(ctx context.Context, params *acp.RequestPermissionRequest) (*acp.RequestPermissionResponse, error) {
+	slog.InfoContext(ctx, "copilot permission request (auto-approve)", "title", params.ToolCall.Title)
+	if len(params.Options) == 0 {
+		return &acp.RequestPermissionResponse{}, nil
+	}
+	// Select the first option (typically "allow once").
+	return &acp.RequestPermissionResponse{
+		Outcome: acp.NewRequestPermissionOutcomeSelected(params.Options[0].OptionID),
+	}, nil
+}
+
+// ReadTextFile reads a workspace-relative path and returns its contents.
+func (c *vesselClient) ReadTextFile(ctx context.Context, params *acp.ReadTextFileRequest) (*acp.ReadTextFileResponse, error) {
+	path := filepath.Join(c.workspace, params.Path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("ReadTextFile %s: %w", params.Path, err)
+	}
+	slog.InfoContext(ctx, "copilot read file", "path", params.Path, "bytes", len(data))
+	return &acp.ReadTextFileResponse{Content: string(data)}, nil
+}
+
+// WriteTextFile writes content to a workspace-relative path, creating
+// intermediate directories as needed.
+func (c *vesselClient) WriteTextFile(ctx context.Context, params *acp.WriteTextFileRequest) (*acp.WriteTextFileResponse, error) {
+	path := filepath.Join(c.workspace, params.Path)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("WriteTextFile mkdir %s: %w", params.Path, err)
+	}
+	if err := os.WriteFile(path, []byte(params.Content), 0o644); err != nil {
+		return nil, fmt.Errorf("WriteTextFile %s: %w", params.Path, err)
+	}
+	slog.InfoContext(ctx, "copilot wrote file", "path", params.Path, "bytes", len(params.Content))
+	return &acp.WriteTextFileResponse{}, nil
+}
+
+// CreateTerminal spawns the requested command and begins buffering its output.
+// The command runs as a background goroutine; TerminalOutput polls the buffer
+// and WaitForTerminalExit blocks until the process exits.
+func (c *vesselClient) CreateTerminal(ctx context.Context, params *acp.CreateTerminalRequest) (*acp.CreateTerminalResponse, error) {
+	id := fmt.Sprintf("term-%d", time.Now().UnixNano())
+
+	cmd := exec.CommandContext(ctx, params.Command, params.Args...)
+
+	// Working directory: use the param if set, else fall back to workspace.
+	cwd := params.Cwd
+	if cwd == "" {
+		cwd = c.workspace
+	}
+	cmd.Dir = cwd
+
+	// Inherit the container environment and layer any caller-supplied vars.
+	cmd.Env = os.Environ()
+	for _, e := range params.Env {
+		cmd.Env = append(cmd.Env, e.Name+"="+e.Value)
+	}
+
+	sess := &terminalSession{
+		cmd:  cmd,
+		done: make(chan struct{}),
+	}
+	// Both stdout and stderr feed the same buffer so Copilot sees interleaved output.
+	cmd.Stdout = sess
+	cmd.Stderr = sess
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("CreateTerminal %q: %w", params.Command, err)
+	}
+	slog.InfoContext(ctx, "copilot terminal created", "id", id, "command", params.Command, "args", params.Args, "cwd", cwd)
+
+	go func() {
+		waitErr := cmd.Wait()
+		var code int64
+		if waitErr != nil {
+			var exitErr *exec.ExitError
+			if errors.As(waitErr, &exitErr) {
+				code = int64(exitErr.ExitCode())
+				sess.signal = exitErr.ProcessState.String()
+			} else {
+				code = -1
+			}
+		}
+		sess.mu.Lock()
+		sess.exitCode = &code
+		sess.mu.Unlock()
+		close(sess.done)
+		slog.InfoContext(ctx, "copilot terminal exited", "id", id, "exit_code", code)
+	}()
+
+	c.mu.Lock()
+	c.terminals[id] = sess
+	c.mu.Unlock()
+
+	return &acp.CreateTerminalResponse{TerminalID: id}, nil
+}
+
+// TerminalOutput returns the current buffered output of a terminal.
+// The terminal may still be running; Copilot polls this while waiting.
+func (c *vesselClient) TerminalOutput(ctx context.Context, params *acp.TerminalOutputRequest) (*acp.TerminalOutputResponse, error) {
+	c.mu.Lock()
+	sess, ok := c.terminals[params.TerminalID]
+	c.mu.Unlock()
+	if !ok {
+		return &acp.TerminalOutputResponse{Output: ""}, nil
+	}
+	return &acp.TerminalOutputResponse{Output: sess.output()}, nil
+}
+
+// WaitForTerminalExit blocks until the terminal's process exits and returns
+// its exit code.
+func (c *vesselClient) WaitForTerminalExit(ctx context.Context, params *acp.WaitForTerminalExitRequest) (*acp.WaitForTerminalExitResponse, error) {
+	c.mu.Lock()
+	sess, ok := c.terminals[params.TerminalID]
+	c.mu.Unlock()
+	if !ok {
+		// Terminal already released — treat as clean exit.
+		zero := int64(0)
+		return &acp.WaitForTerminalExitResponse{ExitCode: &zero}, nil
+	}
+	select {
+	case <-sess.done:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	resp := &acp.WaitForTerminalExitResponse{}
+	sess.mu.Lock()
+	resp.ExitCode = sess.exitCode
+	resp.Signal = sess.signal
+	sess.mu.Unlock()
+	return resp, nil
+}
+
+// ReleaseTerminal kills the process (if still running) and removes the session.
+func (c *vesselClient) ReleaseTerminal(ctx context.Context, params *acp.ReleaseTerminalRequest) (*acp.ReleaseTerminalResponse, error) {
+	c.mu.Lock()
+	sess, ok := c.terminals[params.TerminalID]
+	if ok {
+		delete(c.terminals, params.TerminalID)
+	}
+	c.mu.Unlock()
+
+	if ok && sess.cmd.Process != nil {
+		select {
+		case <-sess.done:
+			// already exited — nothing to kill
+		default:
+			_ = sess.cmd.Process.Kill()
+		}
+	}
+	return &acp.ReleaseTerminalResponse{}, nil
+}
+
+// KillTerminalCommand kills the process but leaves the session entry intact
+// so Copilot can still call TerminalOutput/WaitForTerminalExit.
+func (c *vesselClient) KillTerminalCommand(ctx context.Context, params *acp.KillTerminalRequest) (*acp.KillTerminalResponse, error) {
+	c.mu.Lock()
+	sess, ok := c.terminals[params.TerminalID]
+	c.mu.Unlock()
+
+	if ok && sess.cmd.Process != nil {
+		select {
+		case <-sess.done:
+			// already exited
+		default:
+			_ = sess.cmd.Process.Kill()
+		}
+	}
+	return &acp.KillTerminalResponse{}, nil
+}
 
 // TraceWriter writes structured execution traces to Beads issue notes.
 // Each trace is timestamped and appended to preserve history.
@@ -186,50 +433,115 @@ func main() {
 		trace.WithAttributes(attribute.String("model", model)),
 	)
 	slog.InfoContext(ctx, "starting ACP session", "model", model)
-	client, err := acp.New(ctx, model)
+
+	// Build argument list — --model is optional.
+	acpArgs := []string{"--acp", "--stdio"}
+	if model != "" {
+		acpArgs = append(acpArgs, "--model", model)
+	}
+
+	// Spawn copilot with stderr forwarded to our container stderr for
+	// debugging.  We use NewClientSideConnection directly (rather than
+	// SpawnAgent) so we can control the cmd before it starts.
+	acpCmd := exec.CommandContext(ctx, "copilot", acpArgs...)
+	acpStdin, err := acpCmd.StdinPipe()
 	if err != nil {
+		acpInitSpan.RecordError(err)
+		acpInitSpan.SetStatus(codes.Error, err.Error())
+		acpInitSpan.End()
+		markFailed(issueID, "ACP start failed")
+		die("acpCmd.StdinPipe failed", err)
+	}
+	acpStdout, err := acpCmd.StdoutPipe()
+	if err != nil {
+		acpInitSpan.RecordError(err)
+		acpInitSpan.SetStatus(codes.Error, err.Error())
+		acpInitSpan.End()
+		markFailed(issueID, "ACP start failed")
+		die("acpCmd.StdoutPipe failed", err)
+	}
+	acpCmd.Stderr = os.Stderr // copilot auth/debug output → container stderr
+
+	if err := acpCmd.Start(); err != nil {
 		acpInitSpan.RecordError(err)
 		acpInitSpan.SetStatus(codes.Error, err.Error())
 		acpInitSpan.End()
 		_ = tw.Write("ACP", fmt.Sprintf("start failed: %v", err))
 		markFailed(issueID, "ACP start failed")
-		die("acp.New failed", err)
+		die("acpCmd.Start failed", err)
 	}
-	defer client.Close()
 
-	protocolVersion, capabilities, err := client.Initialize()
+	vc := &vesselClient{
+		workspace: "/workspace",
+		terminals: make(map[string]*terminalSession),
+	}
+	conn := acp.NewClientSideConnection(vc, acpStdin, acpStdout)
+	defer conn.Close()
+
+	// Close the connection when the copilot process exits so Done() fires.
+	go func() {
+		_ = acpCmd.Wait()
+		conn.Close()
+	}()
+
+	// Start the JSON-RPC read/write loops in the background.
+	// conn.Start blocks until the connection is closed or ctx is cancelled.
+	go func() {
+		if err := conn.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.ErrorContext(ctx, "acp connection error", "err", err)
+		}
+	}()
+
+	// Initialize — negotiate protocol version and advertise our capabilities.
+	initResult, err := conn.Initialize(ctx, &acp.InitializeRequest{
+		ProtocolVersion: acp.ProtocolVersion(acp.CurrentProtocolVersion),
+		ClientCapabilities: &acp.ClientCapabilities{
+			FS: &acp.FileSystemCapabilities{
+				ReadTextFile:  true,
+				WriteTextFile: true,
+			},
+			Terminal: true,
+		},
+	})
 	if err != nil {
 		acpInitSpan.RecordError(err)
 		acpInitSpan.SetStatus(codes.Error, err.Error())
 		acpInitSpan.End()
 		_ = tw.Write("ACP", fmt.Sprintf("initialize handshake failed: %v", err))
 		markFailed(issueID, "ACP error")
-		die("acp.Initialize failed", err)
+		die("conn.Initialize failed", err)
 	}
 	acpInitSpan.End()
-	slog.InfoContext(ctx, "ACP handshake OK", "protocol_version", protocolVersion, "capabilities_count", len(capabilities))
+	slog.InfoContext(ctx, "ACP handshake OK", "protocol_version", int(initResult.ProtocolVersion))
 	_ = tw.WriteJSON("ACP", map[string]any{
 		"event":            "initialize",
-		"protocol_version": protocolVersion,
+		"protocol_version": int(initResult.ProtocolVersion),
 		"status":           "ok",
 	})
 
-	// Step 7: New session.
+	// Step 7: New session — inject the Beads MCP server so Copilot can read
+	// and update issues directly during its work.
 	_, acpSessionSpan := tracer.Start(ctx, "legion.vessel.acp.session")
-	sessionID, err := client.NewSession("/workspace")
+	sessionResult, err := conn.NewSession(ctx, &acp.NewSessionRequest{
+		Cwd: "/workspace",
+		MCPServers: []acp.MCPServer{
+			acp.NewMCPServerStdio("beads", "bd", []string{"mcp"}, []acp.EnvVariable{}),
+		},
+	})
 	if err != nil {
 		acpSessionSpan.RecordError(err)
 		acpSessionSpan.SetStatus(codes.Error, err.Error())
 		acpSessionSpan.End()
 		_ = tw.Write("ACP", fmt.Sprintf("new session failed: %v", err))
 		markFailed(issueID, "ACP error")
-		die("acp.NewSession failed", err)
+		die("conn.NewSession failed", err)
 	}
+	sessionID := sessionResult.SessionID
 	acpSessionSpan.End()
-	slog.InfoContext(ctx, "ACP session ready", "session_id", sessionID)
+	slog.InfoContext(ctx, "ACP session ready", "session_id", string(sessionID))
 	_ = tw.WriteJSON("ACP", map[string]any{
 		"event":      "session/new",
-		"session_id": sessionID,
+		"session_id": string(sessionID),
 		"cwd":        "/workspace",
 		"status":     "ready",
 	})
@@ -245,18 +557,8 @@ func main() {
 	_ = tw.WriteJSON("ACP", map[string]any{
 		"event":        "prompt/request",
 		"user_message": promptContent,
-		"session_id":   sessionID,
+		"session_id":   string(sessionID),
 	})
-
-	onUpdate := func(update map[string]any) {
-		// Record as a span event for trace visibility in Grafana/Tempo.
-		// Don't write every token to Beads — too chatty; final result is written at completion.
-		acpPromptSpan.AddEvent("acp.update", trace.WithAttributes(
-			attribute.String("type", fmt.Sprintf("%v", update["type"])),
-		))
-		// Log token streaming so we can distinguish "Copilot is working" from "token hung".
-		slog.InfoContext(ctx, "acp update", "update_type", fmt.Sprintf("%v", update["type"]))
-	}
 
 	// Determine prompt timeout — default 5 min, overrideable via VESSEL_TIMEOUT (seconds).
 	timeoutSecs := 300
@@ -267,7 +569,21 @@ func main() {
 	}
 	promptCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSecs)*time.Second)
 	defer cancel()
-	stopReason, err := client.Prompt(promptCtx, sessionID, promptContent, onUpdate)
+
+	// SessionUpdate notifications are delivered to vc.SessionUpdate()
+	// automatically by the SDK while conn.Prompt is blocking.
+	promptResult, err := conn.Prompt(promptCtx, &acp.PromptRequest{
+		SessionID: sessionID,
+		Prompt: []acp.ContentBlock{
+			acp.NewContentBlockText(promptContent),
+		},
+	})
+
+	// Unify the stop reason string for the rest of the main() logic.
+	var stopReason string
+	if promptResult != nil {
+		stopReason = string(promptResult.StopReason)
+	}
 
 	// Step 9/10: Handle prompt completion.
 	if err != nil || stopReason != "end_turn" {
