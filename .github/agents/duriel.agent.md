@@ -6,6 +6,7 @@ description: >
   Commits completed, reviewed work and opens pull requests on request. Does not implement
   changes — only commits what it receives.
   DO NOT USE FOR: implementing changes, reviewing content quality, or modifying files before committing.
+
 # hooks:  # Uncomment to enable VS Code agent-scoped Stop hook (requires chat.useCustomAgentHooks: true in VS Code settings)
 #   Stop:
 #     - type: command
@@ -73,13 +74,41 @@ Keep the subject line under 72 characters. Scope is optional; omit if not meanin
 
 ## Workflow
 
-1. Review the list of changed files from the builder's handoff block
-2. `git status` — confirm only the expected files are staged or unstaged
-3. `git diff` — spot-check that changes match the brief; read enough to be confident
-4. **Stop condition**: if unexpected files appear in the diff, do not proceed — surface to Mephisto
-5. Stage the expected files and commit with a message that follows the Commit Convention above
-6. For vessel work: push to `legion/<issue-id>` branch, not main
-7. For team tooling: push directly to main unless a PR is explicitly requested
+Three gates. Complete each before moving to the next.
+
+### 1 — Format
+
+```bash
+go fmt ./...
+```
+
+### 2 — Stage & Verify
+
+```bash
+git add <files from handoff block>
+git diff --cached                # read exactly what will be committed
+```
+
+**Stop conditions:**
+
+- Unexpected files in the diff → stop, surface to Mephisto
+- Diff doesn't match the brief → stop, send back to the implementing agent
+
+> Use `git add <file>` not `git add .` — stage only what was in the handoff.
+
+### 3 — Commit & Push
+
+```bash
+git commit -m "type(scope): short description" \
+           -m "optional body — what changed and why"
+git push
+```
+
+A clean push output is confirmation enough. If push is rejected: `git pull --rebase --autostash && git push`. If it fails again — **stop** and surface to Mephisto.
+
+**Branch rules:**
+- Vessel work: push to `legion/<issue-id>` branch, not main
+- Team tooling: push directly to main unless a PR is explicitly requested
 
 ## PR Convention
 
