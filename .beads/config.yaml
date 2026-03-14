@@ -54,3 +54,6 @@ issue-prefix: "lg"
 # - github.repo
 
 dolt.auto-commit: "on"
+
+dolt:
+  server_port: 3306
