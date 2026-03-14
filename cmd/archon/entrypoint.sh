@@ -47,8 +47,6 @@ if ! bd list > /dev/null 2>&1; then
 else
     echo "[archon-init] Beads already reachable, skipping init."
 fi
-bd dolt remote add origin "git+${REPO_URL}" 2>/dev/null || true
-bd dolt pull || echo "[archon-init] Warning: bd dolt pull failed"
 echo "[archon-init] Beads initialized."
 echo "[archon-init] Initialization complete. Starting Archon..."
 

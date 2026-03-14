@@ -248,7 +248,8 @@ func (c *Client) NewSession(cwd string) (string, error) {
 	defer cancel()
 
 	params := map[string]any{
-		"cwd": cwd,
+		"cwd":        cwd,
+		"mcpServers": []any{},
 	}
 
 	id := int(c.nextID.Add(1))
