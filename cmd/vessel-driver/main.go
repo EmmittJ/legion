@@ -157,13 +157,21 @@ func main() {
 	_, checkoutSpan := tracer.Start(ctx, "legion.vessel.git.checkout",
 		trace.WithAttributes(attribute.String("git.branch", branch)),
 	)
-	if err := runCmd("/workspace", "git", "checkout", "-b", branch); err != nil {
-		checkoutSpan.RecordError(err)
-		checkoutSpan.SetStatus(codes.Error, err.Error())
-		checkoutSpan.End()
-		_ = tw.Write("GIT", fmt.Sprintf("checkout failed: %v", err))
-		markFailed(issueID, "checkout failed")
-		die("git checkout failed", err)
+	// Try to create the branch fresh; if it already exists locally or on the remote
+	// (e.g. a prior vessel run), fall back to switching to the existing branch.
+	checkoutErr := runCmd("/workspace", "git", "checkout", "-b", branch)
+	if checkoutErr != nil {
+		// Branch already exists — switch to it instead.
+		if switchErr := runCmd("/workspace", "git", "checkout", branch); switchErr != nil {
+			// Neither create nor switch worked; report the original create error.
+			checkoutSpan.RecordError(checkoutErr)
+			checkoutSpan.SetStatus(codes.Error, checkoutErr.Error())
+			checkoutSpan.End()
+			_ = tw.Write("GIT", fmt.Sprintf("checkout failed: %v", checkoutErr))
+			markFailed(issueID, "checkout failed")
+			die("git checkout failed", checkoutErr)
+		}
+		slog.InfoContext(ctx, "git branch already exists, switched to existing branch", "branch", branch)
 	}
 	checkoutSpan.End()
 	_ = tw.Write("GIT", fmt.Sprintf("checked out branch %s", branch))
@@ -246,6 +254,8 @@ func main() {
 		acpPromptSpan.AddEvent("acp.update", trace.WithAttributes(
 			attribute.String("type", fmt.Sprintf("%v", update["type"])),
 		))
+		// Log token streaming so we can distinguish "Copilot is working" from "token hung".
+		slog.DebugContext(ctx, "acp update", "update_type", fmt.Sprintf("%v", update["type"]))
 	}
 
 	// Determine prompt timeout — default 5 min, overrideable via VESSEL_TIMEOUT (seconds).
