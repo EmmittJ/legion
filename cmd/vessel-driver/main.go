@@ -58,6 +58,8 @@ func main() {
 	issueID := requireEnv("ISSUE_ID")
 	repoURL := requireEnv("REPO_URL")
 	githubToken := requireEnv("GITHUB_TOKEN")
+	doltHost := requireEnv("DOLT_HOST")
+	doltPort := requireEnv("DOLT_PORT")
 	model := os.Getenv("VESSEL_MODEL")
 
 	// Configure git credential store so the token never appears in remote URLs
@@ -67,28 +69,45 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Clone the repo first so that /workspace/.beads/metadata.json exists.
-	// bd init --quiet run from inside the clone finds the committed metadata
-	// and wires up to the existing Dolt history via refs/dolt/data — no
-	// "no common ancestor" problem because it's joining existing history, not
-	// creating a new empty DB.
+	// Clone the repo first so that /workspace/.beads/ exists with config.yaml
+	// and metadata.json — bd needs these files to resolve project context.
 	if err := runCmd("", "git", "clone", repoURL, "/workspace"); err != nil {
 		slog.Error("git clone failed", "err", err)
 		os.Exit(1)
 	}
 
-	// Seed the Beads/Dolt database from the remote.
-	if err := initBeads("/workspace"); err != nil {
-		slog.Error("beads init failed", "err", err)
+	// The committed config.yaml hard-codes server_host/server_port for the
+	// host machine (127.0.0.1:3307). Inside the Docker network those values
+	// are unreachable, causing bd to report "no beads database found" even
+	// when BEADS_DOLT_SERVER_* env vars are set correctly.  Strip those lines
+	// now so bd is forced to use the env vars exclusively.
+	if err := patchBeadsConfig("/workspace/.beads/config.yaml", doltHost, doltPort); err != nil {
+		slog.Error("failed to patch beads config", "err", err)
 		os.Exit(1)
 	}
 
-	// Pin BEADS_DIR so every subsequent bd call — including the bd mcp server
-	// spawned by Copilot as a child process — finds the database without
-	// needing the working directory to be /workspace.
-	if err := os.Setenv("BEADS_DIR", "/workspace/.beads"); err != nil {
-		slog.Error("failed to set BEADS_DIR", "err", err)
-		os.Exit(1)
+	// Point bd at the host's persistent Dolt SQL server instead of running a
+	// local DB. BEADS_DIR must be set before any bd call so it finds the
+	// committed config.yaml and metadata.json from the clone.
+	for _, kv := range []struct{ key, val string }{
+		{"BEADS_DIR", "/workspace/.beads"},
+		{"BEADS_DOLT_SERVER_HOST", doltHost},
+		{"BEADS_DOLT_SERVER_PORT", doltPort},
+		{"BEADS_DOLT_SERVER_USER", "root"},
+	} {
+		if err := os.Setenv(kv.key, kv.val); err != nil {
+			slog.Error("failed to set env var", "key", kv.key, "err", err)
+			os.Exit(1)
+		}
+	}
+	slog.Info("beads connected", "host", doltHost, "port", doltPort, "issue", issueID)
+
+	// bd show requires .beads/dolt/ to exist as a local Dolt workspace directory.
+	// This directory is gitignored and never present in the clone.  bd init
+	// creates it; the internal bd dolt pull will warn "no common ancestor" —
+	// that is non-fatal and expected (no Dolt data branch lives in git).
+	if err := runCmd("/workspace", "bd", "init"); err != nil {
+		slog.Warn("bd init — local workspace init may warn", "err", err)
 	}
 
 	ctx := context.Background()
@@ -160,6 +179,11 @@ func main() {
 	_ = tw.Write("GIT", fmt.Sprintf("checked out branch %s", branch))
 
 	// Steps 5+6: Start ACP server and perform protocol handshake.
+	// IMPORTANT: copilot --acp --stdio authenticates via GH_TOKEN (set above by
+	// setupGitCredentials).  The token MUST have the "copilot" OAuth scope.
+	// A plain repo-scoped PAT or Actions GITHUB_TOKEN will cause session/prompt
+	// to hang until the 300 s deadline fires with "context deadline exceeded".
+	// Use a token from a Copilot-enabled GitHub account with the copilot scope.
 	_, acpInitSpan := tracer.Start(ctx, "legion.vessel.acp.initialize",
 		trace.WithAttributes(attribute.String("model", model)),
 	)
@@ -343,11 +367,6 @@ func main() {
 	}
 	beadsCloseSpan.End()
 
-	// Sync issue state back to the Dolt remote so other agents see the closure.
-	if err := runCmd("/workspace", "bd", "dolt", "push"); err != nil {
-		slog.WarnContext(ctx, "bd dolt push failed — remote may be out of sync", "err", err)
-	}
-
 	// Mark root span successful before deferred End() fires.
 	rootSpan.SetStatus(codes.Ok, "")
 	rootSpan.SetAttributes(
@@ -400,11 +419,6 @@ func bdShow(dir, id string) (*issueCore, error) {
 func markFailed(issueID, reason string) {
 	if err := runCmd("/workspace", "bd", "update", issueID, "--status=blocked", "--add-label", "failed", "--append-notes="+reason); err != nil {
 		slog.Warn("could not mark issue failed", "issue_id", issueID, "err", err)
-	}
-	// Push blocked state to Dolt remote before container exits so Archon's watcher
-	// sees the terminal status on the remote and can skip a redundant re-update.
-	if err := runCmd("/workspace", "bd", "dolt", "push"); err != nil {
-		slog.Warn("bd dolt push failed in markFailed — remote may be out of sync", "issue_id", issueID, "err", err)
 	}
 }
 
@@ -460,23 +474,27 @@ func setupGitCredentials(token string) error {
 	return nil
 }
 
-// initBeads initialises Beads from inside the cloned repo.
-// In a container stdin is non-TTY so bd init's interactive role prompt is
-// skipped automatically — no flags or git config needed.
-func initBeads(dir string) error {
-	repoURL := os.Getenv("REPO_URL")
-	if repoURL == "" {
-		return fmt.Errorf("REPO_URL not set")
+// patchBeadsConfig overwrites the dolt server connection settings in the
+// committed .beads/config.yaml with the correct values for the container
+// network.
+//
+// The committed config hard-codes 127.0.0.1:3307 (host-facing values).
+// Inside the Docker network those addresses are unreachable.  Simply removing
+// the keys causes bd to auto-start a local Dolt server, which also fails.
+// The fix is to append a second dolt: block at the end of the file; YAML
+// parsers honour the last occurrence of a duplicate key at the same level,
+// so the appended block wins over the committed one.
+func patchBeadsConfig(path, host, port string) error {
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
 	}
-	if err := runCmd(dir, "bd", "init", "--quiet"); err != nil {
-		return err
+	defer f.Close()
+	block := fmt.Sprintf("\ndolt:\n  server_host: %q\n  server_port: %s\n", host, port)
+	if _, err := f.WriteString(block); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
 	}
-	// Register the Dolt remote so bd dolt pull can reach GitHub.
-	// Ignore errors — remote may already exist on re-runs.
-	_ = runCmd(dir, "bd", "dolt", "remote", "add", "origin", "git+"+repoURL)
-	// Sync issue data. Warn-only on failure.
-	if err := runCmd(dir, "bd", "dolt", "pull"); err != nil {
-		slog.Warn("bd dolt pull failed — continuing", "err", err)
-	}
+	slog.Info("patched beads config", "path", path, "dolt_host", host, "dolt_port", port)
 	return nil
 }
+
