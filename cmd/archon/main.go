@@ -370,8 +370,24 @@ func watch(ctx context.Context, cfg config, t *tracker, o *obs) {
 	for name, e := range t.snapshot() {
 		state, err := inspectState(name)
 		if err != nil {
-			slog.ErrorContext(ctx, "watcher: inspect failed", "container", name, "err", err)
-			span.RecordError(err)
+			errStr := err.Error()
+			if strings.Contains(errStr, "No such object") || strings.Contains(errStr, "No such container") {
+				// Container was auto-removed (--rm) before we could inspect it.
+				// Treat as terminal: evict from tracker and mark the issue failed
+				// so the pulse loop can spawn a replacement.
+				slog.WarnContext(ctx, "watcher: container already gone, evicting",
+					"container", name, "issue_id", e.issueID, "err", err)
+				span.AddEvent("vessel.gone", trace.WithAttributes(
+					attribute.String("issue.id", e.issueID),
+					attribute.String("container.name", name),
+				))
+				markError(ctx, e.issueID, "vessel container removed before inspection")
+				t.remove(name)
+			} else {
+				// Transient error (daemon not responding, etc.) — retry next tick.
+				slog.ErrorContext(ctx, "watcher: inspect failed", "container", name, "err", err)
+				span.RecordError(err)
+			}
 			continue
 		}
 		switch {
