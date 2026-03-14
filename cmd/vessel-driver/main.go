@@ -76,16 +76,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// The committed config.yaml hard-codes server_host/server_port for the
-	// host machine (127.0.0.1:3307). Inside the Docker network those values
-	// are unreachable, causing bd to report "no beads database found" even
-	// when BEADS_DOLT_SERVER_* env vars are set correctly.  Strip those lines
-	// now so bd is forced to use the env vars exclusively.
-	if err := patchBeadsConfig("/workspace/.beads/config.yaml", doltHost, doltPort); err != nil {
-		slog.Error("failed to patch beads config", "err", err)
-		os.Exit(1)
-	}
-
 	// Point bd at the host's persistent Dolt SQL server instead of running a
 	// local DB. BEADS_DIR must be set before any bd call so it finds the
 	// committed config.yaml and metadata.json from the clone.
@@ -471,29 +461,5 @@ func setupGitCredentials(token string) error {
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("gh auth setup-git: %w: %s", err, strings.TrimSpace(stderr.String()))
 	}
-	return nil
-}
-
-// patchBeadsConfig overwrites the dolt server connection settings in the
-// committed .beads/config.yaml with the correct values for the container
-// network.
-//
-// The committed config hard-codes 127.0.0.1:3307 (host-facing values).
-// Inside the Docker network those addresses are unreachable.  Simply removing
-// the keys causes bd to auto-start a local Dolt server, which also fails.
-// The fix is to append a second dolt: block at the end of the file; YAML
-// parsers honour the last occurrence of a duplicate key at the same level,
-// so the appended block wins over the committed one.
-func patchBeadsConfig(path, host, port string) error {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0644)
-	if err != nil {
-		return fmt.Errorf("open %s: %w", path, err)
-	}
-	defer f.Close()
-	block := fmt.Sprintf("\ndolt:\n  server_host: %q\n  server_port: %s\n", host, port)
-	if _, err := f.WriteString(block); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	slog.Info("patched beads config", "path", path, "dolt_host", host, "dolt_port", port)
 	return nil
 }

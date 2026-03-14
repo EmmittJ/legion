@@ -18,18 +18,6 @@ fi
 echo "[archon-init] Cloning repo..."
 git clone "${REPO_URL}" /workspace
 
-# Override the committed .beads/config.yaml which hard-codes the host-facing
-# Dolt address (127.0.0.1:3307).  Inside the Docker network Dolt is reachable
-# at ${BEADS_DOLT_SERVER_HOST}:${BEADS_DOLT_SERVER_PORT} (set by compose).
-# Appending a duplicate `dolt:` block causes YAML parsers to use the last
-# occurrence, overriding the committed values.
-cat >> /workspace/.beads/config.yaml <<EOF
-
-dolt:
-  server_host: "${BEADS_DOLT_SERVER_HOST}"
-  server_port: ${BEADS_DOLT_SERVER_PORT}
-EOF
-
 # These are not set by compose — add them now.
 # BEADS_DIR: the clone path isn't known until this script runs.
 # BEADS_DOLT_SERVER_USER: not wired in compose; default to root.
