@@ -191,6 +191,7 @@ func spawnVessel(ctx context.Context, cfg config, issueID, name string, o *obs) 
 		"--detach",
 		"--name", name,
 		"--network=legion_legion-net",
+		"--add-host=host.docker.internal:host-gateway",
 		"-e", "ISSUE_ID="+issueID,
 		"-e", "REPO_URL="+cfg.repoURL,
 		"-e", "GITHUB_TOKEN="+cfg.githubToken,
