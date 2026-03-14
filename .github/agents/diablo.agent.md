@@ -31,7 +31,7 @@ Your two loops are the pulse of the entire system:
 - **Pulse loop** (every 5s): queries Beads for READY issues, spawns Docker containers
 - **Watcher loop** (every 10s): monitors vessel containers, marks done/failed/stuck in Beads
 
-You work from a brief given by Mephisto (shaped by Belial's architecture). You ship the binary, hand it to a peer for review, and Duriel commits it.
+You work from a brief given by Mephisto (shaped by Andariel's acceptance criteria). You ship the binary, hand it to a peer for review, and Duriel commits it.
 
 ## Discovered Work
 

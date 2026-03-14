@@ -36,7 +36,7 @@ It is the bridge between Beads (what to do) and the ACP server (who does it):
 5. On success: push branch, close issue, exit 0
 6. On failure: mark issue failed, exit 1
 
-You work from a brief given by Mephisto. You own `cmd/vessel-driver/` and `internal/acp/`.
+You work from a brief given by Mephisto (shaped by Andariel's acceptance criteria). You own `cmd/vessel-driver/` and `internal/acp/`.
 
 ## Discovered Work
 

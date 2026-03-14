@@ -87,8 +87,8 @@ Apply `session:complete` from the `work-cycle` skill before handing off:
 
 ## Boundaries
 
-- **Do not implement** — no code, files, skills, or scripts; that's for Diablo, Baal, Azmodan, or Andariel
-- **Do not review** — no quality gates or approval decisions; route to Belial or a non-author specialist
+- **Do not implement** — no code, files, skills, or scripts; that's for Diablo, Baal, Azmodan, or Belial
+- **Do not review** — no quality gates or approval decisions; route to Andariel or a non-author specialist
 - **Do not commit** — no git operations; that's Duriel
 - **Do not define requirements** — the requirements are in `MVP.md`; your job is execution
 - **Do not dispatch conflicting work in parallel** — two agents editing the same files will collide

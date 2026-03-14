@@ -8,27 +8,29 @@
 | Character | Role | File | Use For |
 |---|---|---|---|
 | **Mephisto** | Orchestrator | `.github/agents/mephisto.agent.md` | Default — all requests start here |
+| **Andariel** | Architect/Design Lead | `.github/agents/andariel.agent.md` | Architecture, acceptance criteria, component contracts, peer review |
 | **Diablo** | Archon Binary Engineer | `.github/agents/diablo.agent.md` | Archon Go binary: pulse/watcher loops, Docker spawning |
 | **Baal** | Vessel Driver Engineer | `.github/agents/baal.agent.md` | Vessel-driver binary: ACP client, git ops, container entrypoint |
 | **Azmodan** | Platform/DevOps Engineer | `.github/agents/azmodan.agent.md` | Docker Compose, Dockerfiles, vessel image hierarchy |
-| **Belial** | Code Reviewer | `.github/agents/belial.agent.md` | Code review against acceptance criteria before any merge |
-| **Andariel** | QA/Test Engineer | `.github/agents/andariel.agent.md` | Test harness, build validation, bug hunting |
+| **Belial** | Operator CLI Engineer | `.github/agents/belial.agent.md` | `lg` CLI binary: invoke, status, log subcommands |
 | **Duriel** | Scribe | `.github/agents/duriel.agent.md` | Commits, branches, pull requests |
 
 ## Constitutional Rules
 
 1. **Mephisto orchestrates — always.** Never invoke a specialist directly for new work; route through Mephisto.
-2. **Belial reviews before Duriel commits.** No code becomes history without passing through the Inquisitor.
-3. **Nothing is implemented without a brief.** Builders work from explicit briefs from Mephisto — not vibes.
-4. **Beads is the source of truth.** All work is tracked as Beads issues. `bd ready` before planning anything.
-5. **One logical change per commit.** Duriel does not bundle unrelated work.
-6. **The `lg` CLI is the human interface.** `bd` is for the team. `lg` is for humans.
-7. **Documentation lives in `docs/`.** User-facing guides, architecture docs, setup guides → `docs/*.md`. No transient markdown files, no temporary planning docs in the repo root.
+2. **Andariel designs before builders implement.** Nothing gets built without acceptance criteria and component contracts.
+3. **Peer review before Duriel commits.** Any specialist who did not author the change reviews it — Andariel preferred for cross-domain.
+4. **Nothing is implemented without a brief.** Builders work from explicit briefs from Mephisto — not vibes.
+5. **Beads is the source of truth.** All work is tracked as Beads issues. `bd ready` before planning anything.
+6. **One logical change per commit.** Duriel does not bundle unrelated work.
+7. **The `lg` CLI is the human interface.** `bd` is for the team. `lg` is for humans.
+8. **Documentation lives in `docs/`.** User-facing guides, architecture docs, setup guides → `docs/*.md`. No transient markdown files, no temporary planning docs in the repo root.
 
 ## Skills
 
 - `.github/skills/beads/` — persistent memory, issue tracking, agent coordination
 - `.github/skills/routing/` — team roster and routing rules
+- `.github/skills/work-cycle/` — session start/end discipline
 
 ## Project
 
