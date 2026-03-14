@@ -109,6 +109,11 @@ func Setup(ctx context.Context, serviceName string) (
 	// ── /metrics ServeMux ─────────────────────────────────────────────────────
 	mux = http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
 
 	// ── Log provider (TEMPORARILY DISABLED) ──────────────────────────────────
 	// BLOCKED: OTel log batch processor buffers logs asynchronously, causing
