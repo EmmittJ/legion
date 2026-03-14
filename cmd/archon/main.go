@@ -27,6 +27,8 @@ type config struct {
 	vesselImage string
 	githubToken string
 	vesselModel string
+	doltHost    string
+	doltPort    string
 	timeout     time.Duration
 }
 
@@ -105,6 +107,8 @@ func loadConfig() config {
 		vesselImage: os.Getenv("VESSEL_IMAGE"),
 		githubToken: os.Getenv("GITHUB_TOKEN"),
 		vesselModel: os.Getenv("VESSEL_MODEL"),
+		doltHost:    os.Getenv("DOLT_HOST"),
+		doltPort:    os.Getenv("DOLT_PORT"),
 		timeout:     timeout,
 	}
 }
@@ -196,6 +200,8 @@ func spawnVessel(ctx context.Context, cfg config, issueID, name string, o *obs) 
 		"-e", "REPO_URL="+cfg.repoURL,
 		"-e", "GITHUB_TOKEN="+cfg.githubToken,
 		"-e", "VESSEL_MODEL="+cfg.vesselModel,
+		"-e", "DOLT_HOST="+cfg.doltHost,
+		"-e", "DOLT_PORT="+cfg.doltPort,
 		cfg.vesselImage,
 	)
 	if err != nil {
