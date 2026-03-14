@@ -14,9 +14,14 @@ if [ -n "${GITHUB_TOKEN}" ]; then
     GH_TOKEN="${GITHUB_TOKEN}" gh auth setup-git
 fi
 
-# Clone the repo so bd can init from the committed .beads/metadata.json
+# Clone the repo so bd can init from the committed .beads/metadata.json.
+# Guard against re-clone on restart — /workspace may already exist.
 echo "[archon-init] Cloning repo..."
-git clone "${REPO_URL}" /workspace
+if [ ! -d /workspace/.git ]; then
+    git clone "${REPO_URL}" /workspace
+else
+    echo "[archon-init] /workspace already cloned, skipping."
+fi
 
 # These are not set by compose — add them now.
 # BEADS_DIR: the clone path isn't known until this script runs.
@@ -32,10 +37,16 @@ for _var in $(env | grep '^BEADS_' | cut -d= -f1); do
 done
 
 # Initialize Beads from inside the cloned repo -- bd finds .beads/metadata.json
-# and connects to the existing Dolt history. No common-ancestor problem.
+# and connects to the existing Dolt history.
+# Skip init if bd can already reach the database — avoids "Found existing Dolt
+# database" error when the shared Dolt server already has the lg database.
 echo "[archon-init] Initializing Beads..."
-# stdin is non-TTY in a container — bd init --quiet skips all prompts automatically
-cd /workspace && bd init --quiet
+cd /workspace
+if ! bd list > /dev/null 2>&1; then
+    bd init --prefix lg
+else
+    echo "[archon-init] Beads already reachable, skipping init."
+fi
 bd dolt remote add origin "git+${REPO_URL}" 2>/dev/null || true
 bd dolt pull || echo "[archon-init] Warning: bd dolt pull failed"
 echo "[archon-init] Beads initialized."
