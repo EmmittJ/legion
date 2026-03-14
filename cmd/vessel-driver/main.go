@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -486,11 +487,14 @@ func main() {
 
 	// Start the JSON-RPC read/write loops in the background.
 	// conn.Start blocks until the connection is closed or ctx is cancelled.
+	// IMPORTANT: Start() sets c.ctx on its first line; we must yield to let it
+	// run before calling Initialize() — otherwise SendRequest panics on nil c.ctx.
 	go func() {
 		if err := conn.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.ErrorContext(ctx, "acp connection error", "err", err)
 		}
 	}()
+	runtime.Gosched() // yield so Start goroutine initialises c.ctx before we proceed
 
 	// Initialize — negotiate protocol version and advertise our capabilities.
 	initResult, err := conn.Initialize(ctx, &acp.InitializeRequest{
