@@ -21,6 +21,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/EmmittJ/legion/internal/config"
 	"github.com/EmmittJ/legion/internal/telemetry"
 )
 
@@ -301,15 +302,21 @@ func (tw *TraceWriter) WriteJSON(component string, data map[string]any) error {
 }
 
 func main() {
-	// Read required env vars first — these fatal before any spans exist,
-	// which is acceptable: there is nothing meaningful to trace yet.
-	issueID := requireEnv("ISSUE_ID")
-	repoURL := requireEnv("REPO_URL")
+	// Load structured config from LEGION_CONFIG_JSON (or LEGION_CONFIG_FILE for tests).
+	// Secrets (GITHUB_TOKEN, DOLT_HOST/PORT, OTEL_*) remain as individual env vars.
+	vc, err := config.Load()
+	if err != nil {
+		slog.Error("config load failed", "err", err)
+		os.Exit(1)
+	}
+	issueID := vc.IssueID
+	repoURL := vc.RepoURL
+	agentName := vc.AgentName
+
+	// Secrets — stay as individual env vars, not in LEGION_CONFIG_JSON.
 	githubToken := requireEnv("GITHUB_TOKEN")
 	doltHost := requireEnv("DOLT_HOST")
 	doltPort := requireEnv("DOLT_PORT")
-	model := os.Getenv("VESSEL_MODEL")
-	agentName := os.Getenv("LEGION_AGENT")
 
 	// Configure git credential store so the token never appears in remote URLs
 	// or log output.  Must happen before any git operation.
@@ -446,23 +453,20 @@ func main() {
 	// to hang until the 300 s deadline fires with "context deadline exceeded".
 	// Use a token from a Copilot-enabled GitHub account with the copilot scope.
 	_, acpInitSpan := tracer.Start(ctx, "legion.vessel.acp.initialize",
-		trace.WithAttributes(attribute.String("model", model)),
+		trace.WithAttributes(attribute.String("model", vc.Model)),
 	)
-	slog.InfoContext(ctx, "starting ACP session", "model", model)
+	slog.InfoContext(ctx, "starting ACP session", "model", vc.Model, "acp_command", vc.ACPCommand)
 
-	// Build argument list — --model and --agent are optional.
-	acpArgs := []string{"--acp", "--stdio"}
-	if model != "" {
-		acpArgs = append(acpArgs, "--model", model)
-	}
-	if agentName != "" {
-		acpArgs = append(acpArgs, "--agent", agentName)
+	// Split ACP command — already validated non-empty and newline-free by config.Load().
+	acpParts := strings.Fields(vc.ACPCommand)
+	if len(acpParts) == 0 {
+		die("acp_command is empty after splitting", errors.New("empty ACP command"))
 	}
 
-	// Spawn copilot with stderr forwarded to our container stderr for
+	// Spawn the ACP server with stderr forwarded to our container stderr for
 	// debugging.  We use NewClientSideConnection directly (rather than
 	// SpawnAgent) so we can control the cmd before it starts.
-	acpCmd := exec.CommandContext(ctx, "copilot", acpArgs...)
+	acpCmd := exec.CommandContext(ctx, acpParts[0], acpParts[1:]...)
 	acpStdin, err := acpCmd.StdinPipe()
 	if err != nil {
 		acpInitSpan.RecordError(err)
@@ -490,11 +494,11 @@ func main() {
 		die("acpCmd.Start failed", err)
 	}
 
-	vc := &vesselClient{
+	client := &vesselClient{
 		workspace: "/workspace",
 		terminals: make(map[string]*terminalSession),
 	}
-	conn := acp.NewClientSideConnection(vc, acpStdin, acpStdout)
+	conn := acp.NewClientSideConnection(client, acpStdin, acpStdout)
 	defer conn.Close()
 
 	// Close the connection when the copilot process exits so Done() fires.
@@ -572,7 +576,7 @@ func main() {
 	promptContent := issue.Title + "\n\n" + issue.Description
 
 	_, acpPromptSpan := tracer.Start(ctx, "legion.vessel.acp.prompt",
-		trace.WithAttributes(attribute.String("model", model)),
+		trace.WithAttributes(attribute.String("model", vc.Model)),
 	)
 
 	// Write the prompt to Beads for visibility.

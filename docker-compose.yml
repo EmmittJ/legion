@@ -1,6 +1,7 @@
 # Legion local dev stack
 # Required env vars: REPO_URL, GITHUB_TOKEN
 # Optional env vars: VESSEL_IMAGE (default: legion/vessel-copilot:latest), ARCHON_TIMEOUT (default: 3600), VESSEL_MODEL (default: gpt-5-mini)
+# Config file: run 'lg init' first — creates .legion/archon.toml, which is bind-mounted into the archon container
 # Observability:
 #   Grafana:           http://localhost:3300  (traces, logs, metrics — unified UI)
 #   Prometheus:        http://localhost:9090  (metrics query UI)
@@ -63,6 +64,8 @@ services:
       - OTEL_SERVICE_NAME=legion.archon
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      # Archon config — created by 'lg init'. Required before starting Archon.
+      - ./.legion/archon.toml:/etc/legion/archon.toml:ro
     restart: unless-stopped
     depends_on:
       dolt:

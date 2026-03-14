@@ -18,26 +18,29 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
+	archoncfg "github.com/EmmittJ/legion/internal/config"
 	"github.com/EmmittJ/legion/internal/telemetry"
 )
 
 // config holds all runtime configuration read from environment variables.
+// Secrets, image path, and infrastructure coordinates live here.
+// Timing and limits are in ArchonConfig (loaded from .legion/archon.toml).
 type config struct {
 	repoURL       string
 	vesselImage   string
 	githubToken   string
 	vesselModel   string
-	vesselTimeout string // forwarded to vessel containers as VESSEL_TIMEOUT
 	doltHost      string
 	doltPort      string
 	dockerNetwork string // Docker network vessel containers join (must reach dolt)
-	timeout       time.Duration
 }
 
 // entry tracks a running vessel container.
 type entry struct {
 	issueID   string
 	startedAt time.Time
+	roleName  string
+	agentName string
 }
 
 // tracker holds the set of vessel containers Archon is currently managing.
@@ -53,10 +56,15 @@ func (t *tracker) has(name string) bool {
 	return ok
 }
 
-func (t *tracker) add(name, issueID string) {
+func (t *tracker) add(name, issueID, roleName, agentName string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.runs[name] = entry{issueID: issueID, startedAt: time.Now()}
+	t.runs[name] = entry{
+		issueID:   issueID,
+		startedAt: time.Now(),
+		roleName:  roleName,
+		agentName: agentName,
+	}
 }
 
 func (t *tracker) remove(name string) {
@@ -78,10 +86,44 @@ func (t *tracker) snapshot() map[string]entry {
 
 // addAt records a vessel with an explicit start time — used by reconcile to
 // restore containers that were already running before this Archon process started.
+// Reconciled containers get empty role/agent (ADR lg-dyh).
 func (t *tracker) addAt(name, issueID string, startedAt time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.runs[name] = entry{issueID: issueID, startedAt: startedAt}
+}
+
+// count returns the total number of tracked vessels.
+func (t *tracker) count() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.runs)
+}
+
+// countByRole returns the number of tracked vessels with the given role.
+func (t *tracker) countByRole(role string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	n := 0
+	for _, e := range t.runs {
+		if e.roleName == role {
+			n++
+		}
+	}
+	return n
+}
+
+// countByAgent returns the number of tracked vessels with the given agent name.
+func (t *tracker) countByAgent(agent string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	n := 0
+	for _, e := range t.runs {
+		if e.agentName == agent {
+			n++
+		}
+	}
+	return n
 }
 
 // reconcile scans for vessel containers that were already running (e.g. from a
@@ -185,13 +227,6 @@ type containerState struct {
 }
 
 func loadConfig() config {
-	timeout := 3600 * time.Second
-	if v := os.Getenv("ARCHON_TIMEOUT"); v != "" {
-		var secs int
-		if _, err := fmt.Sscanf(v, "%d", &secs); err == nil && secs > 0 {
-			timeout = time.Duration(secs) * time.Second
-		}
-	}
 	network := os.Getenv("DOCKER_NETWORK")
 	if network == "" {
 		network = "legion_legion-net"
@@ -201,11 +236,9 @@ func loadConfig() config {
 		vesselImage:   os.Getenv("VESSEL_IMAGE"),
 		githubToken:   os.Getenv("GITHUB_TOKEN"),
 		vesselModel:   os.Getenv("VESSEL_MODEL"),
-		vesselTimeout: os.Getenv("VESSEL_TIMEOUT"),
 		doltHost:      os.Getenv("DOLT_HOST"),
 		doltPort:      os.Getenv("DOLT_PORT"),
 		dockerNetwork: network,
-		timeout:       timeout,
 	}
 }
 
@@ -277,15 +310,49 @@ func markBlocked(ctx context.Context, issueID, note string) {
 	}
 }
 
-func spawnVessel(ctx context.Context, cfg config, issueID, name, agentName string, o *obs) error {
+func spawnVessel(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, issueID, name, roleName, agentName string, o *obs) error {
 	ctx, span := o.tracer.Start(ctx, "legion.archon.vessel.spawn",
 		trace.WithAttributes(
 			attribute.String("issue.id", issueID),
 			attribute.String("container.name", name),
+			attribute.String("vessel.role", roleName),
 			attribute.String("vessel.agent", agentName),
 		),
 	)
 	defer span.End()
+
+	// Assemble ACP command from model and agent identity.
+	acp := "copilot --acp --stdio"
+	if cfg.vesselModel != "" {
+		acp += " --model " + cfg.vesselModel
+	}
+	if agentName != "" {
+		acp += " --agent " + agentName
+	}
+
+	// Build VesselConfig — the single structured config delivered to the vessel.
+	// Secrets (GITHUB_TOKEN, DOLT_*) remain as separate env vars.
+	vc := archoncfg.VesselConfig{
+		IssueID:        issueID,
+		RoleName:       roleName,
+		RepoURL:        cfg.repoURL,
+		ACPCommand:     acp,
+		AgentName:      agentName,
+		Model:          cfg.vesselModel,
+		ReviewEnabled:  acfg.Review.Enabled,
+		MaxRework:      acfg.Review.MaxRework,
+		DefaultRole:    acfg.Routing.DefaultRole,
+		MaxDispatch:    acfg.Routing.MaxDispatch,
+		DispatcherMode: acfg.Routing.DispatcherMode,
+		RouterAgent:    acfg.Routing.RouterAgent,
+	}
+	vc.ApplyDefaults()
+	vc.DeleteBranchOnMerge = acfg.Review.DeleteBranchOnMerge
+
+	vcJSON, err := json.Marshal(vc)
+	if err != nil {
+		return fmt.Errorf("marshaling VesselConfig: %w", err)
+	}
 
 	args := []string{
 		"run",
@@ -293,33 +360,18 @@ func spawnVessel(ctx context.Context, cfg config, issueID, name, agentName strin
 		"--name", name,
 		"--network=" + cfg.dockerNetwork,
 		"--add-host=host.docker.internal:host-gateway",
-		"-e", "ISSUE_ID=" + issueID,
-		"-e", "REPO_URL=" + cfg.repoURL,
+		"-e", "LEGION_CONFIG_JSON=" + string(vcJSON),
 		"-e", "GITHUB_TOKEN=" + cfg.githubToken,
 		"-e", "DOLT_HOST=" + cfg.doltHost,
 		"-e", "DOLT_PORT=" + cfg.doltPort,
-		"-e", "VESSEL_MODEL=" + cfg.vesselModel,
 	}
-	// Forward VESSEL_TIMEOUT only when explicitly set; vessel-driver has its own default.
-	if cfg.vesselTimeout != "" {
-		args = append(args, "-e", "VESSEL_TIMEOUT="+cfg.vesselTimeout)
-	}
-	// Inject agent routing label so the vessel-driver knows which agent to use.
-	if agentName != "" {
-		args = append(args, "-e", "LEGION_AGENT="+agentName)
-	}
-	if v := os.Getenv("LEGION_MAX_REWORK"); v != "" {
-		args = append(args, "-e", "LEGION_MAX_REWORK="+v)
-	}
-	// Forward observability endpoint so vessel traces land in the same collector.
-	// OTEL_SERVICE_NAME is hardcoded for vessels — not inherited from Archon's env.
 	if ep := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); ep != "" {
 		args = append(args, "-e", "OTEL_EXPORTER_OTLP_ENDPOINT="+ep)
 	}
 	args = append(args, "-e", "OTEL_SERVICE_NAME=legion.vessel-driver")
 	args = append(args, cfg.vesselImage)
 
-	_, err := run("docker", args...)
+	_, err = run("docker", args...)
 	if err != nil {
 		span.RecordError(err)
 		return err
@@ -349,8 +401,27 @@ func inspectState(name string) (containerState, error) {
 	return state, nil
 }
 
+// vesselLimitReached returns true if spawning a new vessel for the given role
+// and agent would violate any configured limit (global, per-role, or per-agent).
+func vesselLimitReached(t *tracker, acfg archoncfg.ArchonConfig, roleName, agentName string) bool {
+	if acfg.Limits.MaxGlobal > 0 && t.count() >= acfg.Limits.MaxGlobal {
+		return true
+	}
+	if roleName != "" {
+		if cap, ok := acfg.Limits.ByRole[roleName]; ok && t.countByRole(roleName) >= cap {
+			return true
+		}
+	}
+	if agentName != "" {
+		if cap, ok := acfg.Limits.ByAgent[agentName]; ok && t.countByAgent(agentName) >= cap {
+			return true
+		}
+	}
+	return false
+}
+
 // pulse is a single execution of the pulse loop body.
-func pulse(ctx context.Context, cfg config, t *tracker, o *obs) {
+func pulse(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *tracker, o *obs) {
 	ctx, span := o.tracer.Start(ctx, "legion.archon.pulse")
 	defer span.End()
 
@@ -377,19 +448,24 @@ func pulse(ctx context.Context, cfg config, t *tracker, o *obs) {
 		if t.has(name) {
 			continue
 		}
+		agent := agentLabel(iss)
+		roleName := acfg.Routing.DefaultRole
+		if vesselLimitReached(t, acfg, roleName, agent) {
+			slog.DebugContext(ctx, "pulse: vessel limit reached", "role", roleName, "agent", agent)
+			continue
+		}
 		if err := claimIssue(iss.ID); err != nil {
 			// Another Archon instance may have already claimed it — skip silently.
 			slog.ErrorContext(ctx, "claim issue (skipping)", "issue_id", iss.ID, "err", err)
 			continue
 		}
-		agent := agentLabel(iss)
-		if err := spawnVessel(ctx, cfg, iss.ID, name, agent, o); err != nil {
+		if err := spawnVessel(ctx, cfg, acfg, iss.ID, name, roleName, agent, o); err != nil {
 			slog.ErrorContext(ctx, "spawning vessel", "issue_id", iss.ID, "err", err)
 			markError(ctx, iss.ID, fmt.Sprintf("spawn failed: %v", err))
 			continue
 		}
-		t.add(name, iss.ID)
-		slog.InfoContext(ctx, "spawned vessel", "container", name, "issue_id", iss.ID, "agent", agent)
+		t.add(name, iss.ID, roleName, agent)
+		slog.InfoContext(ctx, "spawned vessel", "container", name, "issue_id", iss.ID, "agent", agent, "role", roleName)
 		spawned++
 	}
 
@@ -402,7 +478,7 @@ func pulse(ctx context.Context, cfg config, t *tracker, o *obs) {
 // watch is a single execution of the watcher loop body.
 // lastHeartbeat tracks when each container last emitted a "still running" log;
 // it is owned by watcherLoop and persists across ticks.
-func watch(ctx context.Context, cfg config, t *tracker, o *obs, lastHeartbeat map[string]time.Time) {
+func watch(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *tracker, o *obs, lastHeartbeat map[string]time.Time) {
 	ctx, span := o.tracer.Start(ctx, "legion.archon.watcher.tick")
 	defer span.End()
 
@@ -456,9 +532,9 @@ func watch(ctx context.Context, cfg config, t *tracker, o *obs, lastHeartbeat ma
 			t.remove(name)
 			delete(lastHeartbeat, name)
 
-		case time.Since(e.startedAt) > cfg.timeout:
+		case time.Since(e.startedAt) > acfg.Daemon.VesselTimeout():
 			slog.WarnContext(ctx, "vessel timed out",
-				"container", name, "timeout", cfg.timeout, "issue_id", e.issueID)
+				"container", name, "timeout", acfg.Daemon.VesselTimeout(), "issue_id", e.issueID)
 			span.AddEvent("vessel.timeout", trace.WithAttributes(
 				attribute.String("issue.id", e.issueID),
 			))
@@ -484,21 +560,21 @@ func watch(ctx context.Context, cfg config, t *tracker, o *obs, lastHeartbeat ma
 	}
 }
 
-func pulseLoop(ctx context.Context, cfg config, t *tracker, o *obs) {
-	ticker := time.NewTicker(5 * time.Second)
+func pulseLoop(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *tracker, o *obs) {
+	ticker := time.NewTicker(acfg.Daemon.PulseInterval())
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			pulse(ctx, cfg, t, o)
+			pulse(ctx, cfg, acfg, t, o)
 		}
 	}
 }
 
-func watcherLoop(ctx context.Context, cfg config, t *tracker, o *obs) {
-	ticker := time.NewTicker(10 * time.Second)
+func watcherLoop(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *tracker, o *obs) {
+	ticker := time.NewTicker(acfg.Daemon.WatcherInterval())
 	defer ticker.Stop()
 	lastHeartbeat := make(map[string]time.Time)
 	for {
@@ -506,7 +582,7 @@ func watcherLoop(ctx context.Context, cfg config, t *tracker, o *obs) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			watch(ctx, cfg, t, o, lastHeartbeat)
+			watch(ctx, cfg, acfg, t, o, lastHeartbeat)
 		}
 	}
 }
@@ -545,16 +621,26 @@ func main() {
 	}
 
 	cfg := loadConfig()
+	acfg, err := archoncfg.LoadArchonConfig()
+	if err != nil {
+		slog.Error("failed to load archon config", "err", err)
+		os.Exit(1)
+	}
 	t := &tracker{runs: make(map[string]entry)}
 
-	slog.Info("archon starting", "pulse_interval", "5s", "watcher_interval", "10s")
+	slog.Info("archon starting",
+		"pulse_interval", acfg.Daemon.PulseInterval(),
+		"watcher_interval", acfg.Daemon.WatcherInterval(),
+		"vessel_timeout", acfg.Daemon.VesselTimeout(),
+		"max_global", acfg.Limits.MaxGlobal,
+	)
 
 	// Recover any vessel containers that outlived a previous Archon process so the
 	// watcher loop can time them out or clean them up without re-spawning.
 	reconcile(ctx, t)
 
-	go pulseLoop(ctx, cfg, t, o)
-	go watcherLoop(ctx, cfg, t, o)
+	go pulseLoop(ctx, cfg, acfg, t, o)
+	go watcherLoop(ctx, cfg, acfg, t, o)
 
 	<-ctx.Done()
 	slog.Info("received shutdown signal, stopping")

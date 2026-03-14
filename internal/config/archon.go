@@ -1,0 +1,198 @@
+package config
+
+import (
+	"fmt"
+	"os"
+	"strconv"
+	"time"
+
+	"github.com/BurntSushi/toml"
+)
+
+// ArchonConfig is the top-level configuration for the Archon daemon.
+// It is loaded from .legion/archon.toml (or LEGION_CONFIG_PATH) and
+// overrideable via environment variables for 12-factor deployments.
+type ArchonConfig struct {
+	Daemon  ArchonDaemon  `toml:"daemon"`
+	Limits  ArchonLimits  `toml:"limits"`
+	Routing ArchonRouting `toml:"routing"`
+	Review  ArchonReview  `toml:"review"`
+	Vessel  ArchonVessel  `toml:"vessel"`
+}
+
+// ArchonDaemon controls loop timing and per-vessel deadline.
+type ArchonDaemon struct {
+	PulseIntervalSeconds   int `toml:"pulse_interval_seconds"`
+	WatcherIntervalSeconds int `toml:"watcher_interval_seconds"`
+	VesselTimeoutSeconds   int `toml:"vessel_timeout_seconds"`
+}
+
+// PulseInterval converts PulseIntervalSeconds to a time.Duration.
+func (d ArchonDaemon) PulseInterval() time.Duration {
+	return time.Duration(d.PulseIntervalSeconds) * time.Second
+}
+
+// WatcherInterval converts WatcherIntervalSeconds to a time.Duration.
+func (d ArchonDaemon) WatcherInterval() time.Duration {
+	return time.Duration(d.WatcherIntervalSeconds) * time.Second
+}
+
+// VesselTimeout converts VesselTimeoutSeconds to a time.Duration.
+func (d ArchonDaemon) VesselTimeout() time.Duration {
+	return time.Duration(d.VesselTimeoutSeconds) * time.Second
+}
+
+// ArchonLimits caps concurrent vessel containers globally, per-role, and per-agent.
+type ArchonLimits struct {
+	MaxGlobal int            `toml:"max_global"` // 0 = unlimited
+	ByRole    map[string]int `toml:"by_role"`
+	ByAgent   map[string]int `toml:"by_agent"`
+}
+
+// ArchonRouting controls the dispatcher and default agent assignment.
+type ArchonRouting struct {
+	RouterAgent    string `toml:"router_agent"`
+	DefaultRole    string `toml:"default_role"`
+	MaxDispatch    int    `toml:"max_dispatch"`
+	DispatcherMode string `toml:"dispatcher_mode"`
+}
+
+// ArchonReview controls automatic review-vessel creation after worker completion.
+type ArchonReview struct {
+	Enabled             bool `toml:"enabled"`
+	MaxRework           int  `toml:"max_rework"`
+	DeleteBranchOnMerge bool `toml:"delete_branch_on_merge"`
+}
+
+// ArchonVessel holds per-vessel defaults forwarded into containers.
+type ArchonVessel struct {
+	DefaultModel string `toml:"default_model"`
+}
+
+// defaultArchonConfig returns a fully populated ArchonConfig with safe defaults.
+func defaultArchonConfig() ArchonConfig {
+	return ArchonConfig{
+		Daemon: ArchonDaemon{
+			PulseIntervalSeconds:   10,
+			WatcherIntervalSeconds: 30,
+			VesselTimeoutSeconds:   1800,
+		},
+		Limits: ArchonLimits{
+			MaxGlobal: 5,
+			ByRole:    map[string]int{"worker": 3, "reviewer": 1, "dispatcher": 2},
+			ByAgent:   map[string]int{},
+		},
+		Routing: ArchonRouting{
+			DefaultRole:    "worker",
+			MaxDispatch:    3,
+			DispatcherMode: "keyword",
+		},
+		Review: ArchonReview{
+			MaxRework:           3,
+			DeleteBranchOnMerge: true,
+		},
+	}
+}
+
+// LoadArchonConfig loads ArchonConfig using the following resolution order:
+//
+//  1. LEGION_CONFIG_PATH env var (if set)
+//  2. /etc/legion/archon.toml   (production — volume mounted)
+//  3. .legion/archon.toml       (local dev — relative to cwd)
+//  4. Built-in defaults         (no file required)
+//
+// After file loading, environment variable overrides are applied and the
+// resulting config is validated before returning.
+func LoadArchonConfig() (ArchonConfig, error) {
+	cfg := defaultArchonConfig()
+
+	path := os.Getenv("LEGION_CONFIG_PATH")
+	if path == "" {
+		for _, candidate := range []string{"/etc/legion/archon.toml", ".legion/archon.toml"} {
+			if _, err := os.Stat(candidate); err == nil {
+				path = candidate
+				break
+			}
+		}
+	}
+
+	if path != "" {
+		if _, err := toml.DecodeFile(path, &cfg); err != nil {
+			return cfg, fmt.Errorf("loading archon config from %s: %w", path, err)
+		}
+	}
+	// path == "" → no config file found; defaults remain in effect (non-fatal).
+
+	applyEnvOverrides(&cfg)
+
+	if err := cfg.Validate(); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+// applyEnvOverrides applies 12-factor environment variable overrides on top of
+// whatever was loaded from the config file. Malformed values are silently ignored
+// so that a bad env var never prevents startup; operators will see unexpected
+// behaviour and should validate their env.
+func applyEnvOverrides(cfg *ArchonConfig) {
+	if v := os.Getenv("LEGION_MAX_VESSELS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Limits.MaxGlobal = n
+		}
+	}
+	if v := os.Getenv("LEGION_PULSE_INTERVAL"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Daemon.PulseIntervalSeconds = n
+		}
+	}
+	if v := os.Getenv("LEGION_VESSEL_TIMEOUT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Daemon.VesselTimeoutSeconds = n
+		}
+	} else if v := os.Getenv("VESSEL_TIMEOUT"); v != "" {
+		// Backward compat: VESSEL_TIMEOUT was the legacy env var name.
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Daemon.VesselTimeoutSeconds = n
+		}
+	}
+	if v := os.Getenv("LEGION_ROUTER_AGENT"); v != "" {
+		cfg.Routing.RouterAgent = v
+	}
+	if v := os.Getenv("LEGION_DEFAULT_ROLE"); v != "" {
+		cfg.Routing.DefaultRole = v
+	}
+	if v := os.Getenv("LEGION_REVIEW_ENABLED"); v == "true" {
+		cfg.Review.Enabled = true
+	}
+	if v := os.Getenv("LEGION_MAX_REWORK"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Review.MaxRework = n
+		}
+	}
+	if v := os.Getenv("LEGION_DISPATCHER_MODE"); v != "" {
+		cfg.Routing.DispatcherMode = v
+	}
+	if v := os.Getenv("LEGION_MAX_DISPATCH"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Routing.MaxDispatch = n
+		}
+	}
+	if v := os.Getenv("VESSEL_MODEL"); v != "" {
+		cfg.Vessel.DefaultModel = v
+	}
+}
+
+// Validate checks ArchonConfig for obviously invalid values.
+func (c *ArchonConfig) Validate() error {
+	if c.Daemon.PulseIntervalSeconds < 1 {
+		return fmt.Errorf("daemon.pulse_interval_seconds must be >= 1")
+	}
+	if c.Limits.MaxGlobal < 0 {
+		return fmt.Errorf("limits.max_global must be >= 0 (0 = unlimited)")
+	}
+	if c.Routing.MaxDispatch < 1 {
+		return fmt.Errorf("routing.max_dispatch must be >= 1")
+	}
+	return nil
+}
