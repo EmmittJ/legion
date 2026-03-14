@@ -61,10 +61,10 @@ type SessionNewParams struct {
 }
 
 type MCPServer struct {
-	Name    string   `json:"name"`
-	Command string   `json:"command"`
-	Args    []string `json:"args"`
-	Env     []string `json:"env"`
+	Name    string            `json:"name"`
+	Command string            `json:"command"`
+	Args    []string          `json:"args"`
+	Env     map[string]string `json:"env"` // object {}, NOT array [] — copilot schema requires object
 }
 
 type SessionNewResult struct {
