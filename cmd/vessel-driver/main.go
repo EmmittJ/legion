@@ -343,6 +343,41 @@ func (c *vesselClient) KillTerminalCommand(ctx context.Context, params *acp.Kill
 // run shell commands inside the vessel container.
 // ---------------------------------------------------------------------------
 
+// resolveACPCommand resolves an ACPSpec to a concrete exec arg slice.
+// If modelOverride is non-empty (e.g. from LEGION_MODEL env var), it
+// takes precedence over spec.Model.
+func resolveACPCommand(spec config.ACPSpec, modelOverride string) ([]string, error) {
+	model := spec.Model
+	if modelOverride != "" {
+		model = modelOverride
+	}
+
+	switch spec.Backend {
+	case "copilot":
+		args := []string{"copilot", "--acp", "--stdio"}
+		if model != "" {
+			args = append(args, "--model", model)
+		}
+		agentFile := spec.AgentFile
+		if agentFile != "" && !strings.Contains(agentFile, "/") {
+			agentFile = "/workspace/.github/agents/" + agentFile + ".agent.md"
+		}
+		if agentFile != "" {
+			args = append(args, "--agent", agentFile)
+		}
+		return args, nil
+
+	case "raw":
+		if spec.AgentFile == "" {
+			return nil, fmt.Errorf("acp_spec.backend=raw requires agent_file to be set")
+		}
+		return strings.Fields(spec.AgentFile), nil
+
+	default:
+		return nil, fmt.Errorf("acp_spec.backend %q is not supported", spec.Backend)
+	}
+}
+
 func main() {
 	// Load structured config from LEGION_CONFIG_JSON (or LEGION_CONFIG_FILE for tests).
 	// Secrets (GITHUB_TOKEN, DOLT_HOST/PORT, OTEL_*) remain as individual env vars
@@ -357,7 +392,8 @@ func main() {
 		os.Exit(1)
 	}
 	issueID := vc.IssueID
-	branch := "vessel/" + issueID // must match the branch created by pre-run.sh
+	branch := "vessel/" + issueID            // must match the branch created by pre-run.sh
+	legionModel := os.Getenv("LEGION_MODEL") // overrides acp_spec.model at runtime if set
 
 	ctx := context.Background()
 
@@ -423,21 +459,20 @@ func main() {
 	// GitHub account with the copilot scope.
 
 	_, acpInitSpan := tracer.Start(ctx, "legion.vessel.acp.initialize",
-		trace.WithAttributes(attribute.String("model", vc.Model)),
+		trace.WithAttributes(attribute.String("model", vc.ACPSpec.Model)),
 	)
-	slog.InfoContext(ctx, "starting ACP session", "model", vc.Model, "acp_command", vc.ACPCommand)
 
-	// Split ACP command — already validated non-empty and newline-free by config.Load().
-	acpParts := strings.Fields(vc.ACPCommand)
-	if len(acpParts) == 0 {
+	acpArgs, err := resolveACPCommand(vc.ACPSpec, legionModel)
+	if err != nil {
 		acpInitSpan.End()
-		die("acp_command is empty after splitting", errors.New("empty ACP command"))
+		die("resolve ACP command", err)
 	}
+	slog.InfoContext(ctx, "starting ACP session", "model", vc.ACPSpec.Model, "acp_args", acpArgs)
 
 	// Spawn the ACP server with stderr forwarded to our container stderr for
 	// debugging.  We use NewClientSideConnection directly (rather than
 	// SpawnAgent) so we can control the cmd before it starts.
-	acpCmd := exec.CommandContext(ctx, acpParts[0], acpParts[1:]...)
+	acpCmd := exec.CommandContext(ctx, acpArgs[0], acpArgs[1:]...)
 	acpStdin, err := acpCmd.StdinPipe()
 	if err != nil {
 		acpInitSpan.RecordError(err)
@@ -531,7 +566,7 @@ func main() {
 	}
 
 	_, acpPromptSpan := tracer.Start(ctx, "legion.vessel.acp.prompt",
-		trace.WithAttributes(attribute.String("model", vc.Model)),
+		trace.WithAttributes(attribute.String("model", vc.ACPSpec.Model)),
 	)
 
 	// Determine prompt timeout — default 5 min, overrideable via VESSEL_TIMEOUT (seconds).

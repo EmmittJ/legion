@@ -7,6 +7,16 @@ import (
 	"strings"
 )
 
+// ACPSpec describes the abstract intent for an ACP session.
+// vessel-driver resolves this to a concrete exec command at runtime.
+type ACPSpec struct {
+	Transport string `json:"transport"`            // Required. "stdio" only for MVP.
+	Backend   string `json:"backend"`              // Required. "copilot" | "raw"
+	Model     string `json:"model,omitempty"`      // Optional. Overridden by LEGION_MODEL at runtime.
+	AgentFile string `json:"agent_file,omitempty"` // Optional. Bare name → vessel-driver expands to
+	// /workspace/.github/agents/<name>.agent.md
+}
+
 // VesselConfig is the complete, validated configuration for a single vessel
 // container run. Archon assembles it at spawn time; vessel-driver and hooks
 // consume it. Secrets (GITHUB_TOKEN, DOLT_HOST/PORT, OTEL_*) are NOT here —
@@ -16,14 +26,13 @@ import (
 // Test override: set LEGION_CONFIG_FILE to a path containing the JSON.
 type VesselConfig struct {
 	// ── Core identity (all required) ─────────────────────────────────────────
-	IssueID    string `json:"issue_id"`    // e.g. "lg-abc"
-	RoleName   string `json:"role_name"`   // "worker"|"reviewer"|"dispatcher"|"planner"
-	RepoURL    string `json:"repo_url"`    // git clone URL
-	ACPCommand string `json:"acp_command"` // full command string, e.g. "copilot --acp --stdio --agent baal"
+	IssueID  string  `json:"issue_id"`  // e.g. "lg-abc"
+	RoleName string  `json:"role_name"` // "worker"|"reviewer"|"dispatcher"|"planner"
+	RepoURL  string  `json:"repo_url"`  // git clone URL
+	ACPSpec  ACPSpec `json:"acp_spec"`
 
 	// ── Agent overlay (optional) ──────────────────────────────────────────────
-	AgentName string `json:"agent_name,omitempty"` // e.g. "baal"; empty = role default only
-	Model     string `json:"model,omitempty"`      // e.g. "gpt-5-mini"; empty = ACP server default
+	AgentName string `json:"agent_name,omitempty"` // e.g. "baal"; kept for informational use
 
 	// ── Review workflow ───────────────────────────────────────────────────────
 	ReviewEnabled        bool `json:"review_enabled"`          // default: false
@@ -96,8 +105,11 @@ func (c *VesselConfig) Validate() error {
 	if c.RepoURL == "" {
 		errs = append(errs, "repo_url required")
 	}
-	if c.ACPCommand == "" {
-		errs = append(errs, "acp_command required")
+	if c.ACPSpec.Transport == "" {
+		return fmt.Errorf("acp_spec.transport is required")
+	}
+	if c.ACPSpec.Backend == "" {
+		return fmt.Errorf("acp_spec.backend is required")
 	}
 	if c.MaxRework < 1 {
 		errs = append(errs, "max_rework must be >= 1")
@@ -115,9 +127,6 @@ func (c *VesselConfig) Validate() error {
 		if c.ReviewOriginalIssue == "" {
 			errs = append(errs, "review_original_issue required for reviewer role")
 		}
-	}
-	if strings.ContainsAny(c.ACPCommand, "\n\r") {
-		errs = append(errs, "acp_command must not contain newlines")
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("VesselConfig invalid: %s", strings.Join(errs, "; "))

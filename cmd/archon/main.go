@@ -422,24 +422,19 @@ func spawnVessel(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, i
 	)
 	defer span.End()
 
-	// Assemble ACP command from model and agent identity.
-	acp := "copilot --acp --stdio"
-	if cfg.vesselModel != "" {
-		acp += " --model " + cfg.vesselModel
-	}
-	if agentName != "" {
-		acp += " --agent " + agentName
-	}
-
 	// Build VesselConfig — the single structured config delivered to the vessel.
 	// Secrets (GITHUB_TOKEN, DOLT_*) remain as separate env vars.
 	vc := archoncfg.VesselConfig{
-		IssueID:        issueID,
-		RoleName:       roleName,
-		RepoURL:        cfg.repoURL,
-		ACPCommand:     acp,
+		IssueID:  issueID,
+		RoleName: roleName,
+		RepoURL:  cfg.repoURL,
+		ACPSpec: archoncfg.ACPSpec{
+			Transport: "stdio",
+			Backend:   "copilot",
+			Model:     resolveModel(acfg, labels),
+			AgentFile: agentName,
+		},
 		AgentName:      agentName,
-		Model:          cfg.vesselModel,
 		ReviewEnabled:  acfg.Review.Enabled,
 		MaxRework:      acfg.Review.MaxRework,
 		DefaultRole:    acfg.Routing.DefaultRole,
