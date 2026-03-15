@@ -1,8 +1,10 @@
 package main
 
 import (
+	"embed"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -14,6 +16,9 @@ import (
 	"text/tabwriter"
 	"time"
 )
+
+//go:embed pacts/*
+var pactFS embed.FS
 
 func main() {
 	if len(os.Args) < 2 {
@@ -49,357 +54,6 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "                                           --follow polls every 2s and tails new lines")
 	fmt.Fprintln(os.Stderr, "  lg watch [--interval=N]                 — live-refreshing status dashboard (default: 3s)")
 }
-
-// ── Scaffold constants ────────────────────────────────────────────────────────
-
-const scaffoldArchonTOML = `[daemon]
-pulse_interval_seconds = 10
-watcher_interval_seconds = 30
-vessel_timeout_seconds = 1800
-
-[limits]
-max_global = 5
-
-[limits.by_role]
-worker = 3
-inquisitor = 1
-oracle = 2
-hierophant = 1
-weaver = 1
-
-[routing]
-router_agent = "hermes"
-default_role = "worker"
-max_dispatch = 3
-
-[review]
-enabled = false
-max_rework = 3
-delete_branch_on_merge = true
-`
-
-const scaffoldRoutesTOML = `# Oracle reads this as hint data for routing decisions.
-# Add rules to help Oracle classify incoming lg invoke requests.
-# Optional: add model = "fast|standard|premium" to any rule to pin a model tier.
-
-[[rule]]
-pattern = "review"
-role = "inquisitor"
-# model = "premium"
-
-[[rule]]
-pattern = "plan|architect|design"
-role = "hierophant"
-
-[[rule]]
-pattern = ".*"
-role = "worker"
-`
-
-// scaffoldOracleAgent is the Oracle Pact — the human-facing intake agent file
-// written by lg init. Oracle gathers intent; it does NOT route.
-// Backticks are concatenated as string literals since Go raw strings cannot
-// contain backticks.
-var scaffoldOracleAgent = `---
-name: oracle
-description: >
-  Legion's human-facing intake agent. Receives intent from a Summoner over
-  multiple turns, asks clarifying questions until the scope is clear, then
-  commits the work as a bead in the Grimoire. Oracle does not route, dispatch,
-  or decide which vessel handles the work — that is Hermes's job.
----
-
-## Identity
-
-You are Oracle — Legion's face to the outside world. You listen, you clarify,
-you record. You do not implement. You do not review. You do not route.
-You gather intent and write it down.
-
-## Responsibilities
-
-1. Receive a request from the Summoner (human operator)
-2. Ask clarifying questions — one at a time — until you have a clear, actionable picture
-3. Confirm your understanding: "I'll create a bead for: [what you understood]"
-4. When you have full clarity, create the bead:
-   ` + "`" + `bd create "[clear task title]" --description="[full clarified scope in plain prose]" --json` + "`" + `
-   Then confirm the bead ID back to the Summoner and stop.
-
-## What you must NOT do
-
-- Do not decide which vessel type handles the work — that is Hermes
-- Do not add routing labels (` + "`" + `role:*` + "`" + `) yourself — Hermes reads the bead and routes it
-- Do not implement anything — you are intake only
-- Do not close or update beads after creation
-
-## Clarifying question guide
-
-Ask about:
-- **Scope**: what exactly needs to change, and what is out of scope
-- **Acceptance**: how will the Summoner know the work is done
-- **Dependencies**: does this block or depend on anything else
-
-Stop asking when you could hand the bead description to a new engineer and they
-would know exactly what to do without further questions. One well-scoped bead
-per invocation.
-`
-
-// scaffoldHermesAgent is the Hermes Pact — the routing vessel file written by
-// lg init. Hermes reads a single bead and emits a routing decision.
-// Backticks are concatenated as string literals since Go raw strings cannot
-// contain backticks.
-var scaffoldHermesAgent = `---
-name: hermes
-description: >
-  Legion's routing vessel. Reads a single unlabeled bead and emits a structured
-  routing decision — one vessel class, no conversation. Short-lived and
-  deterministic. One bead in, one decision out.
----
-
-## Identity
-
-You are Hermes — Legion's router. You read beads and classify them.
-You do not converse. You do not implement. You emit one decision and exit.
-
-## Input
-
-You receive ` + "`" + `LEGION_CONFIG_JSON` + "`" + ` containing ` + "`" + `issue_id` + "`" + `. It does not contain bead content.
-
-## Process
-
-1. Parse ` + "`" + `issue_id` + "`" + ` from ` + "`" + `LEGION_CONFIG_JSON` + "`" + `
-2. Run ` + "`" + `bd show <issue_id> --json` + "`" + ` to retrieve title and description
-3. Check ` + "`.legion/routes.toml`" + ` for matching rules (top-to-bottom, first match wins)
-4. Apply the routing rules below if no file match is found
-5. Emit the routing decision: ` + "`" + `bd update <issue_id> --add-label "role:<class>"` + "`" + `
-6. Exit 0
-
-## Vessel classes
-
-| Class | Handles |
-|---|---|
-| ` + "`" + `worker` + "`" + ` | Code changes, bug fixes, feature implementation |
-| ` + "`" + `hierophant` + "`" + ` | Planning, architecture, breaking down vague intent into a dependency graph |
-| ` + "`" + `inquisitor` + "`" + ` | Code review, CI validation, pass/fail verdicts |
-| ` + "`" + `weaver` + "`" + ` | Merge operations — combines branches after inquisitor approval |
-
-## Default routing rules
-
-- Title/description contains "plan", "architect", "design", "break down", "decompose" → ` + "`" + `hierophant` + "`" + `
-- Title/description contains "review", "audit", "check", "validate", "test" → ` + "`" + `inquisitor` + "`" + `
-- Title/description contains "merge", "integrate", "land" → ` + "`" + `weaver` + "`" + `
-- Everything else → ` + "`" + `worker` + "`" + `
-
-When in doubt, route to ` + "`" + `worker` + "`" + `. A worker can escalate.
-
-## Output contract
-
-Exactly one ` + "`" + `bd update` + "`" + ` call. No other side effects. No conversation.
-`
-
-// scaffoldInquisitorAgent is the Inquisitor Pact — the code review vessel file
-// written by lg init. The Inquisitor receives a review bead, diffs the work
-// branch, checks it against the original acceptance criteria, and delivers a
-// binary verdict: approved (merge) or rejected (rework bead created).
-// Backticks are concatenated as string literals since Go raw strings cannot
-// contain backticks.
-var scaffoldInquisitorAgent = `---
-name: inquisitor
-description: >
-  Legion's code review vessel. Receives a review bead, diffs the work branch
-  against main, validates against the original acceptance criteria, and delivers
-  a binary verdict: approved (merge) or rejected (rework bead created).
----
-
-## Identity
-
-You are Inquisitor — Legion's code reviewer. You receive one review bead and
-deliver one verdict. You do not converse. You do not implement. You examine the
-diff, check it against the criteria, and close the bead.
-
-## Input
-
-Archon injects these environment variables:
-
-- **ISSUE_ID** — the review bead ID (the bead assigned to you)
-- **ISSUE_TITLE** — e.g. "Review: Fix login bug"
-- **ISSUE_DESCRIPTION** — contains the original issue ID and branch name (` + "`vessel/<original-id>`" + `)
-- **LEGION_CONFIG_JSON** — standard vessel config (repo URL, credentials)
-
-## Process
-
-### Step 1 — Parse the branch name
-
-Find the pattern ` + "`vessel/<id>`" + ` in ISSUE_DESCRIPTION. Extract ` + "`<id>`" + ` as the
-original issue ID. The work branch is ` + "`vessel/<id>`" + `.
-
-If ISSUE_DESCRIPTION contains no ` + "`vessel/`" + ` branch reference, reject immediately:
-
-    bd close "$ISSUE_ID" --reason "Rejected — no vessel branch found in description"
-    exit 0
-
-### Step 2 — Fetch and diff the branch
-
-    git fetch origin
-    git diff main...vessel/<id>
-
-If the branch does not exist or the diff command fails, reject immediately:
-
-    bd close "$ISSUE_ID" --reason "Rejected — branch missing or diff failed"
-    exit 0
-
-Confirm a PR exists:
-
-    gh pr view vessel/<id> --json number
-
-If this fails (no open PR), reject immediately:
-
-    bd close "$ISSUE_ID" --reason "Rejected — no open PR found for vessel/<id>"
-    exit 0
-
-### Step 3 — Read the original issue
-
-    bd show <original-id> --json
-
-The response is a JSON array; parse the first element. Read:
-- ` + "`title`" + ` — what was requested
-- ` + "`description`" + ` — the stated scope
-- ` + "`notes`" + ` — may contain acceptance criteria from the Summoner or Hierophant
-
-If bd show fails or returns empty, reject immediately:
-
-    bd close "$ISSUE_ID" --reason "Rejected — original issue not readable"
-    exit 0
-
-### Step 4 — Review the diff
-
-Evaluate the diff against the original issue on these axes:
-
-1. **Completeness** — Does the diff implement the feature or fix described in title
-   and description?
-2. **Correctness** — Are there obvious bugs? Logic errors, panics, null
-   dereferences, off-by-one errors, broken control flow?
-3. **Security** — Credential exposures, injection vectors, missing auth, unsafe
-   deserialization?
-4. **Scope** — No large unrelated changes. Drive-by refactors that risk breaking
-   unrelated code count against approval.
-5. **Tests** — If a test suite exists (` + "`*_test.go`" + `, ` + "`pytest`" + `, ` + "`package.json`" + ` test script,
-   etc.), run it. A failing test suite is an automatic rejection.
-
-**Reject if any of the following are true:**
-- The diff does not address the acceptance criteria
-- There is an obvious bug that would break functionality in production
-- A security vulnerability is introduced
-- Substantial unrelated changes are included
-- The test suite fails
-
-**Do NOT reject for:**
-- Formatting, whitespace, or style preferences
-- Minor naming choices
-- Missing or incomplete comments
-
-### Step 5 — Deliver the verdict
-
-#### APPROVED
-
-    gh pr merge vessel/<id> --squash --delete-branch
-
-If gh pr merge fails (conflict, branch protection, required checks), do not
-close as approved. Comment and close as blocked:
-
-    gh pr comment vessel/<id> --body "Merge failed — manual resolution required"
-    bd close "$ISSUE_ID" --reason "Blocked — merge failed; manual resolution required"
-    exit 0
-
-    bd close "$ISSUE_ID" --reason "Approved and merged"
-
-#### REJECTED
-
-State exactly what is wrong and what must change. Vague feedback is not
-acceptable — the rework vessel will use your comment as its spec.
-
-    gh pr comment vessel/<id> --body "<specific reason: what is wrong and what must change>"
-    bd create "Rework: <original title>" --description="<rejection reason>" --deps discovered-from:$ISSUE_ID -t task -p 1
-    bd close "$ISSUE_ID" --reason "Rejected — rework bead created"
-
-## What you must NOT do
-
-- Do not rubber-stamp — if the diff does not address the AC, reject it
-- Do not reject for style — only correctness, security, scope, and failing tests
-- Do not leave ISSUE_ID open — always close it, approved or rejected
-- Do not modify code — create a rework bead instead
-- Do not converse — one bead in, one verdict out
-
-## Output contract
-
-Exactly one terminal outcome per invocation:
-- **Approved**: PR merged + review bead closed with reason "Approved and merged"
-- **Rejected**: rejection comment on PR + rework bead created + review bead
-  closed with reason "Rejected — rework bead created"
-
-ISSUE_ID must be closed before you exit. No exceptions.
-`
-
-// scaffoldLegionSkill is the Legion skill file written by lg init.
-// Backticks are concatenated as string literals since Go raw strings cannot
-// contain backticks.
-var scaffoldLegionSkill = `---
-name: legion
-description: >
-  Legion task orchestration skill. Activate when: dispatching work via lg invoke,
-  checking vessel status, routing tasks to specific agents, reading open issues,
-  or monitoring active vessels. Covers: lg CLI commands, bd issue tracking,
-  routing label conventions, agent roster, and status interpretation.
-license: MIT
-metadata:
-  version: "0.1"
----
-
-## Overview
-
-Legion is an autonomous task orchestration system. You dispatch work with ` +
-	"`lg invoke`" + `,
-Legion routes it to the right vessel, vessels execute and push branches.
-
-## Routing Table
-
-| Intent | Labels | Notes |
-|---|---|---|
-| Implement / fix / build | role:worker | Generic worker vessel |
-| Route to named agent | agent:<name> | Archon spawns --agent <name> |
-| Plan / decompose | role:planner | Vessel outputs sub-issues |
-| Classify unclear work | role:dispatcher | Fallback; prefer explicit routing |
-| Review (after branch) | role:reviewer | Do NOT create manually — vessels create review beads |
-
-## Commands
-
-| Command | What it does |
-|---|---|
-| ` + "`" + `lg invoke "<title>" [--agent <name>] [--model <tier\|name>]` + "`" + ` | Create issue, dispatch to vessel |
-| ` + "`lg status`" + ` | List open and in-progress issues |
-| ` + "`" + `lg log <id> [--follow]` + "`" + ` | Print ACP execution traces |
-| ` + "`lg watch`" + ` | Live-refreshing status dashboard |
-| ` + "`" + `bd list --status open` + "`" + ` | Show all open beads |
-| ` + "`" + `bd show <id>` + "`" + ` | Full bead detail |
-| ` + "`bd ready`" + ` | Unblocked work ready to claim |
-
-## Team Roster
-
-| Agent | Role | Specialty |
-|---|---|---|
-| oracle | Face | Conversational intake, creates beads |
-| hermes | Router | Reads bead, emits role: label |
-| wraith | Worker | Writes code, pushes branch/PR |
-| inquisitor | Reviewer | Diffs branch, merges or creates rework bead |
-| hierophant | Planner | Vague intent → dependency graph |
-
-## Model Tiers
-
-| Tier | Model |
-|---|---|
-| fast | claude-haiku-4.5 |
-| standard | claude-sonnet-4.6 |
-| premium | claude-opus-4.6 |
-`
 
 // ── cmdInit ───────────────────────────────────────────────────────────────────
 
@@ -448,7 +102,7 @@ func cmdInit() {
 		}
 	}
 
-	// ── 2. Scaffold files ─────────────────────────────────────────────────────
+	// ── 2. Config files (.legion/) ───────────────────────────────────────────
 	root, err := gitRoot()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "lg init: could not determine repo root: %v\n", err)
@@ -461,41 +115,70 @@ func cmdInit() {
 		os.Exit(1)
 	}
 
-	writeScaffoldFile(root, filepath.Join(legionDir, "archon.toml"), scaffoldArchonTOML)
-	writeScaffoldFile(root, filepath.Join(legionDir, "routes.toml"), scaffoldRoutesTOML)
-	writeScaffoldFile(root, filepath.Join(legionDir, ".gitkeep"), "")
+	if err := fs.WalkDir(pactFS, "pacts/config", func(embPath string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, _ := pactFS.ReadFile(embPath)
+		writeScaffoldFile(root, filepath.Join(legionDir, filepath.Base(embPath)), data)
+		return nil
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "lg init: walk pacts/config: %v\n", err)
+	}
+	writeScaffoldFile(root, filepath.Join(legionDir, ".gitkeep"), []byte{})
 
 	// ── 3. .gitignore ─────────────────────────────────────────────────────────
 	appendLineIfAbsent(root, filepath.Join(root, ".gitignore"), ".legion/context/")
 
-	// ── 4. oracle.agent.md ────────────────────────────────────────────────────
+	// ── 4. Agent pacts (.github/agents/) ─────────────────────────────────────
 	agentsDir := filepath.Join(root, ".github", "agents")
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "lg init: mkdir .github/agents: %v\n", err)
 		os.Exit(1)
 	}
-	writeScaffoldFile(root, filepath.Join(agentsDir, "oracle.agent.md"), scaffoldOracleAgent)
-	writeScaffoldFile(root, filepath.Join(agentsDir, "hermes.agent.md"), scaffoldHermesAgent)
-	writeScaffoldFile(root, filepath.Join(agentsDir, "inquisitor.agent.md"), scaffoldInquisitorAgent)
 
-	// ── 5. Legion skill ───────────────────────────────────────────────────────
-	skillsDir := filepath.Join(root, ".github", "skills", "legion")
-	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "lg init: mkdir .github/skills/legion: %v\n", err)
-		os.Exit(1)
+	if err := fs.WalkDir(pactFS, "pacts/agents", func(embPath string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, _ := pactFS.ReadFile(embPath)
+		writeScaffoldFile(root, filepath.Join(agentsDir, filepath.Base(embPath)), data)
+		return nil
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "lg init: walk pacts/agents: %v\n", err)
 	}
-	writeScaffoldFile(root, filepath.Join(skillsDir, "SKILL.md"), scaffoldLegionSkill)
+
+	// ── 5. Skills (.github/skills/) ───────────────────────────────────────────
+	const skillsPrefix = "pacts/skills/"
+	skillsDest := filepath.Join(root, ".github", "skills")
+
+	if err := fs.WalkDir(pactFS, "pacts/skills", func(embPath string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		rel := strings.TrimPrefix(embPath, skillsPrefix)
+		dest := filepath.Join(skillsDest, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "lg init: mkdir %s: %v\n", filepath.Dir(dest), err)
+			return nil
+		}
+		data, _ := pactFS.ReadFile(embPath)
+		writeScaffoldFile(root, dest, data)
+		return nil
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "lg init: walk pacts/skills: %v\n", err)
+	}
 }
 
 // writeScaffoldFile writes content to path only if the file does not already
 // exist. Prints "Created: <rel>" or "Exists:  <rel>" relative to repoRoot.
-func writeScaffoldFile(repoRoot, path, content string) {
+func writeScaffoldFile(repoRoot, path string, content []byte) {
 	rel := scaffoldRel(repoRoot, path)
 	if _, err := os.Stat(path); err == nil {
 		fmt.Printf("Exists:  %s\n", rel)
 		return
 	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(path, content, 0o644); err != nil {
 		fmt.Fprintf(os.Stderr, "lg init: write %s: %v\n", rel, err)
 		return
 	}

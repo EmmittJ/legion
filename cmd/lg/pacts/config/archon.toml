@@ -1,0 +1,24 @@
+[daemon]
+pulse_interval_seconds = 10
+watcher_interval_seconds = 30
+vessel_timeout_seconds = 1800
+
+[limits]
+max_global = 5
+
+[limits.by_role]
+worker = 3
+inquisitor = 1
+oracle = 2
+hierophant = 1
+weaver = 1
+
+[routing]
+router_agent = "hermes"
+default_role = "worker"
+max_dispatch = 3
+
+[review]
+enabled = false
+max_rework = 3
+delete_branch_on_merge = true
