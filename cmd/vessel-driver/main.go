@@ -26,6 +26,76 @@ import (
 )
 
 // ---------------------------------------------------------------------------
+// result — written to /workspace/result.json for the post-run hook to consume.
+// ---------------------------------------------------------------------------
+
+// vesselResult is the outcome record vessel-driver writes to /workspace/result.json
+// on every exit path (success or error).  The post-run hook reads this file to
+// decide whether to push, close the issue, or mark it failed.
+type vesselResult struct {
+	IssueID      string `json:"issue_id"`
+	Status       string `json:"status"`                  // "success" | "error"
+	Branch       string `json:"branch,omitempty"`        // set on success
+	ErrorMessage string `json:"error_message,omitempty"` // set on error
+}
+
+// writeResult serialises r to /workspace/result.json.  Errors are logged but
+// never fatal — we always want the process to exit with the correct code even
+// if the write fails.
+func writeResult(r vesselResult) {
+	data, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		slog.Error("result marshal failed", "err", err)
+		return
+	}
+	if err := os.MkdirAll("/workspace", 0o755); err != nil {
+		slog.Error("mkdir /workspace failed", "err", err)
+		return
+	}
+	if err := os.WriteFile("/workspace/result.json", data, 0o644); err != nil {
+		slog.Error("write result.json failed", "err", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// issueContext — read from /workspace/.legion/context.json (written by pre-run).
+// ---------------------------------------------------------------------------
+
+// issueContext mirrors the fields vessel-driver needs from the Beads issue.
+// The pre-run hook writes `bd show <id> --json` to /workspace/.legion/context.json;
+// that output is a JSON array, so we parse the first element.
+type issueContext struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+}
+
+// readIssueContext reads /workspace/.legion/context.json written by the pre-run hook.
+// On any read/parse failure it returns a minimal fallback so the ACP session can
+// still start (the agent will see the issue ID at minimum).
+func readIssueContext(issueID string) (*issueContext, error) {
+	data, err := os.ReadFile("/workspace/.legion/context.json")
+	if err != nil {
+		slog.Warn("context.json not found — using fallback prompt", "issue_id", issueID, "err", err)
+		return &issueContext{ID: issueID, Title: "Work on issue " + issueID}, nil
+	}
+	// bd show --json emits a JSON array; parse the first element.
+	var items []issueContext
+	if jsonErr := json.Unmarshal(data, &items); jsonErr != nil {
+		// Try single-object form as a fallback.
+		var single issueContext
+		if err2 := json.Unmarshal(data, &single); err2 != nil {
+			return nil, fmt.Errorf("parse context.json: %w", jsonErr)
+		}
+		return &single, nil
+	}
+	if len(items) == 0 {
+		return &issueContext{ID: issueID, Title: "Work on issue " + issueID}, nil
+	}
+	return &items[0], nil
+}
+
+// ---------------------------------------------------------------------------
 // vesselClient — implements acp.Client so Copilot can read/write files and
 // run shell commands inside the vessel container.
 // ---------------------------------------------------------------------------
@@ -268,98 +338,28 @@ func (c *vesselClient) KillTerminalCommand(ctx context.Context, params *acp.Kill
 	return &acp.KillTerminalResponse{}, nil
 }
 
-// TraceWriter writes structured execution traces to Beads issue notes.
-// Each trace is timestamped and appended to preserve history.
-type TraceWriter struct {
-	issueID string
-}
-
-// NewTraceWriter creates a trace writer for the given issue.
-func NewTraceWriter(issueID string) *TraceWriter {
-	return &TraceWriter{issueID: issueID}
-}
-
-// Write appends a formatted trace event to the Beads issue.
-// Format: [TIMESTAMP] <component>: <message>
-func (tw *TraceWriter) Write(component, message string) error {
-	timestamp := time.Now().UTC().Format("2006-01-02T15:04:05Z")
-	trace := fmt.Sprintf("[%s] %s: %s", timestamp, component, message)
-	return runCmd("/workspace", "bd", "update", tw.issueID, "--append-notes", trace)
-}
-
-// WriteJSON appends a structured JSON trace event to the Beads issue.
-// Useful for capturing rich context (ACP messages, git output, etc).
-func (tw *TraceWriter) WriteJSON(component string, data map[string]any) error {
-	timestamp := time.Now().UTC().Format("2006-01-02T15:04:05Z")
-	data["timestamp"] = timestamp
-	data["component"] = component
-	raw, err := json.Marshal(data)
-	if err != nil {
-		return err
-	}
-	trace := string(raw)
-	return runCmd("/workspace", "bd", "update", tw.issueID, "--append-notes", trace)
-}
+// ---------------------------------------------------------------------------
+// vesselClient — implements acp.Client so Copilot can read/write files and
+// run shell commands inside the vessel container.
+// ---------------------------------------------------------------------------
 
 func main() {
 	// Load structured config from LEGION_CONFIG_JSON (or LEGION_CONFIG_FILE for tests).
-	// Secrets (GITHUB_TOKEN, DOLT_HOST/PORT, OTEL_*) remain as individual env vars.
+	// Secrets (GITHUB_TOKEN, DOLT_HOST/PORT, OTEL_*) remain as individual env vars
+	// consumed by the pre/post-run hooks — vessel-driver does not read them directly.
 	vc, err := config.Load()
 	if err != nil {
 		slog.Error("config load failed", "err", err)
+		// writeResult is defined above main() so it is safe to call here even
+		// though telemetry and die() are not yet initialised.  issueID is unknown
+		// at this point so we leave it empty — post-run.sh checks status only.
+		writeResult(vesselResult{Status: "error", ErrorMessage: "config load: " + err.Error()})
 		os.Exit(1)
 	}
 	issueID := vc.IssueID
-	repoURL := vc.RepoURL
-	agentName := vc.AgentName
-
-	// Secrets — stay as individual env vars, not in LEGION_CONFIG_JSON.
-	githubToken := requireEnv("GITHUB_TOKEN")
-	doltHost := requireEnv("DOLT_HOST")
-	doltPort := requireEnv("DOLT_PORT")
-
-	// Configure git credential store so the token never appears in remote URLs
-	// or log output.  Must happen before any git operation.
-	if err := setupGitCredentials(githubToken); err != nil {
-		slog.Error("git credential setup failed", "err", err)
-		os.Exit(1)
-	}
-
-	// Clone the repo first so that /workspace/.beads/ exists with config.yaml
-	// and metadata.json — bd needs these files to resolve project context.
-	if err := runCmd("", "git", "clone", repoURL, "/workspace"); err != nil {
-		slog.Error("git clone failed", "err", err)
-		os.Exit(1)
-	}
-
-	// Point bd at the host's persistent Dolt SQL server instead of running a
-	// local DB. BEADS_DIR must be set before any bd call so it finds the
-	// committed config.yaml and metadata.json from the clone.
-	for _, kv := range []struct{ key, val string }{
-		{"BEADS_DIR", "/workspace/.beads"},
-		{"BEADS_DOLT_SERVER_HOST", doltHost},
-		{"BEADS_DOLT_SERVER_PORT", doltPort},
-		{"BEADS_DOLT_SERVER_USER", "root"},
-	} {
-		if err := os.Setenv(kv.key, kv.val); err != nil {
-			slog.Error("failed to set env var", "key", kv.key, "err", err)
-			os.Exit(1)
-		}
-	}
-	slog.Info("beads connected", "host", doltHost, "port", doltPort, "issue", issueID)
-
-	// bd show requires .beads/dolt/ to exist as a local Dolt workspace directory.
-	// This directory is gitignored and never present in the clone.  bd init
-	// creates it; the internal bd dolt pull will warn "no common ancestor" —
-	// that is non-fatal and expected (no Dolt data branch lives in git).
-	if err := runCmd("/workspace", "bd", "init"); err != nil {
-		slog.Warn("bd init — local workspace init may warn", "err", err)
-	}
+	branch := "vessel/" + issueID // must match the branch created by pre-run.sh
 
 	ctx := context.Background()
-
-	// Trace writer for appending execution events to Beads issue notes.
-	tw := NewTraceWriter(issueID)
 
 	// Initialize telemetry. Non-fatal: a noop tracer/meter is returned on
 	// failure so the rest of the binary continues without distributed tracing.
@@ -370,88 +370,58 @@ func main() {
 	}
 	// IMPORTANT: vessel-driver is short-lived. This defer is the only
 	// mechanism that flushes buffered spans to Jaeger before exit.
-	// os.Exit bypasses defers, so the die() helper below calls shutdown
-	// explicitly on every fatal error path.
+	// os.Exit bypasses defers, so die() calls shutdown explicitly on every
+	// fatal error path.
 	defer func() { _ = shutdown(ctx) }()
 
-	// Root span covering the entire vessel lifecycle.
+	// Root span covering the entire ACP session lifecycle.
 	ctx, rootSpan := tracer.Start(ctx, "legion.vessel.run",
 		trace.WithAttributes(
 			attribute.String("issue.id", issueID),
-			attribute.String("repo.url", repoURL),
+			attribute.String("repo.url", vc.RepoURL),
 		),
 	)
 	defer rootSpan.End()
 
-	// die records the error on the root span, flushes telemetry, and exits 1.
-	// It must be called instead of log.Fatalf/os.Exit on every fatal path
-	// reached after this point, because os.Exit bypasses all defers.
+	// die records the error on the root span, writes result.json, flushes
+	// telemetry, and exits 1.  Must be used instead of os.Exit on every fatal
+	// path reached after telemetry is initialised.
 	die := func(msg string, fatalErr error) {
 		rootSpan.RecordError(fatalErr)
 		rootSpan.SetStatus(codes.Error, msg)
 		rootSpan.End()
 		slog.ErrorContext(ctx, msg, "err", fatalErr)
+		writeResult(vesselResult{
+			IssueID:      issueID,
+			Status:       "error",
+			ErrorMessage: fatalErr.Error(),
+		})
 		_ = shutdown(ctx)
 		os.Exit(1)
 	}
 
-	// Step 2: Read issue from Beads.
-	_, beadsReadSpan := tracer.Start(ctx, "legion.vessel.beads.read",
-		trace.WithAttributes(attribute.String("issue.id", issueID)),
-	)
-	issue, err := bdShow("/workspace", issueID)
+	// Read the issue context written by the pre-run hook so we can build the prompt.
+	issue, err := readIssueContext(issueID)
 	if err != nil {
-		beadsReadSpan.RecordError(err)
-		beadsReadSpan.SetStatus(codes.Error, err.Error())
-		beadsReadSpan.End()
-		die(fmt.Sprintf("bd show %s failed", issueID), err)
+		die("read issue context failed", err)
 	}
-	beadsReadSpan.End()
 
-	// Step 3: Checkout branch.
-	branch := "legion/" + issueID
-	_, checkoutSpan := tracer.Start(ctx, "legion.vessel.git.checkout",
-		trace.WithAttributes(attribute.String("git.branch", branch)),
-	)
-	// Try to create the branch fresh; if it already exists locally or on the remote
-	// (e.g. a prior vessel run), fall back to switching to the existing branch.
-	checkoutErr := runCmd("/workspace", "git", "checkout", "-b", branch)
-	if checkoutErr != nil {
-		// Branch already exists — switch to it instead.
-		if switchErr := runCmd("/workspace", "git", "checkout", branch); switchErr != nil {
-			// Neither create nor switch worked; report the original create error.
-			checkoutSpan.RecordError(checkoutErr)
-			checkoutSpan.SetStatus(codes.Error, checkoutErr.Error())
-			checkoutSpan.End()
-			_ = tw.Write("GIT", fmt.Sprintf("checkout failed: %v", checkoutErr))
-			markFailed(issueID, "checkout failed")
-			die("git checkout failed", checkoutErr)
-		}
-		slog.InfoContext(ctx, "git branch already exists, switched to existing branch", "branch", branch)
-	}
-	checkoutSpan.End()
-	_ = tw.Write("GIT", fmt.Sprintf("checked out branch %s", branch))
-
-	// Agent identity check: if LEGION_AGENT is set the agent file must exist
+	// Agent identity check: if agent_name is set the agent file must exist
 	// inside the cloned repo before we spend time starting Copilot.
-	if agentName != "" {
-		agentFile := "/workspace/.github/agents/" + agentName + ".agent.md"
+	if vc.AgentName != "" {
+		agentFile := "/workspace/.github/agents/" + vc.AgentName + ".agent.md"
 		if _, statErr := os.Stat(agentFile); statErr != nil {
-			reason := "agent file not found: " + agentName
-			if !os.IsNotExist(statErr) {
-				reason = "agent file unreadable: " + statErr.Error()
-			}
-			markFailed(issueID, reason)
 			die("agent file check failed", statErr)
 		}
 	}
 
-	// Steps 5+6: Start ACP server and perform protocol handshake.
-	// IMPORTANT: copilot --acp --stdio authenticates via GH_TOKEN (set above by
-	// setupGitCredentials).  The token MUST have the "copilot" OAuth scope.
-	// A plain repo-scoped PAT or Actions GITHUB_TOKEN will cause session/prompt
-	// to hang until the 300 s deadline fires with "context deadline exceeded".
-	// Use a token from a Copilot-enabled GitHub account with the copilot scope.
+	// ── ACP session ─────────────────────────────────────────────────────────
+	// IMPORTANT: copilot --acp --stdio authenticates via GH_TOKEN.
+	// The token MUST have the "copilot" OAuth scope.  A plain repo-scoped PAT
+	// or Actions GITHUB_TOKEN will cause session/prompt to hang until the
+	// VESSEL_TIMEOUT deadline fires.  Use a token from a Copilot-enabled
+	// GitHub account with the copilot scope.
+
 	_, acpInitSpan := tracer.Start(ctx, "legion.vessel.acp.initialize",
 		trace.WithAttributes(attribute.String("model", vc.Model)),
 	)
@@ -460,6 +430,7 @@ func main() {
 	// Split ACP command — already validated non-empty and newline-free by config.Load().
 	acpParts := strings.Fields(vc.ACPCommand)
 	if len(acpParts) == 0 {
+		acpInitSpan.End()
 		die("acp_command is empty after splitting", errors.New("empty ACP command"))
 	}
 
@@ -472,7 +443,6 @@ func main() {
 		acpInitSpan.RecordError(err)
 		acpInitSpan.SetStatus(codes.Error, err.Error())
 		acpInitSpan.End()
-		markFailed(issueID, "ACP start failed")
 		die("acpCmd.StdinPipe failed", err)
 	}
 	acpStdout, err := acpCmd.StdoutPipe()
@@ -480,7 +450,6 @@ func main() {
 		acpInitSpan.RecordError(err)
 		acpInitSpan.SetStatus(codes.Error, err.Error())
 		acpInitSpan.End()
-		markFailed(issueID, "ACP start failed")
 		die("acpCmd.StdoutPipe failed", err)
 	}
 	acpCmd.Stderr = os.Stderr // copilot auth/debug output → container stderr
@@ -489,8 +458,6 @@ func main() {
 		acpInitSpan.RecordError(err)
 		acpInitSpan.SetStatus(codes.Error, err.Error())
 		acpInitSpan.End()
-		_ = tw.Write("ACP", fmt.Sprintf("start failed: %v", err))
-		markFailed(issueID, "ACP start failed")
 		die("acpCmd.Start failed", err)
 	}
 
@@ -533,20 +500,13 @@ func main() {
 		acpInitSpan.RecordError(err)
 		acpInitSpan.SetStatus(codes.Error, err.Error())
 		acpInitSpan.End()
-		_ = tw.Write("ACP", fmt.Sprintf("initialize handshake failed: %v", err))
-		markFailed(issueID, "ACP error")
 		die("conn.Initialize failed", err)
 	}
 	acpInitSpan.End()
 	slog.InfoContext(ctx, "ACP handshake OK", "protocol_version", int(initResult.ProtocolVersion))
-	_ = tw.WriteJSON("ACP", map[string]any{
-		"event":            "initialize",
-		"protocol_version": int(initResult.ProtocolVersion),
-		"status":           "ok",
-	})
 
-	// Step 7: New session — inject the Beads MCP server so Copilot can read
-	// and update issues directly during its work.
+	// New session — inject the Beads MCP server so Copilot can read and update
+	// issues directly during its work.
 	_, acpSessionSpan := tracer.Start(ctx, "legion.vessel.acp.session")
 	sessionResult, err := conn.NewSession(ctx, &acp.NewSessionRequest{
 		Cwd: "/workspace",
@@ -558,33 +518,21 @@ func main() {
 		acpSessionSpan.RecordError(err)
 		acpSessionSpan.SetStatus(codes.Error, err.Error())
 		acpSessionSpan.End()
-		_ = tw.Write("ACP", fmt.Sprintf("new session failed: %v", err))
-		markFailed(issueID, "ACP error")
 		die("conn.NewSession failed", err)
 	}
 	sessionID := sessionResult.SessionID
 	acpSessionSpan.End()
 	slog.InfoContext(ctx, "ACP session ready", "session_id", string(sessionID))
-	_ = tw.WriteJSON("ACP", map[string]any{
-		"event":      "session/new",
-		"session_id": string(sessionID),
-		"cwd":        "/workspace",
-		"status":     "ready",
-	})
 
-	// Step 8: Prompt with issue content.
-	promptContent := issue.Title + "\n\n" + issue.Description
+	// Build prompt from issue context written by pre-run hook.
+	promptContent := issue.Title
+	if issue.Description != "" {
+		promptContent += "\n\n" + issue.Description
+	}
 
 	_, acpPromptSpan := tracer.Start(ctx, "legion.vessel.acp.prompt",
 		trace.WithAttributes(attribute.String("model", vc.Model)),
 	)
-
-	// Write the prompt to Beads for visibility.
-	_ = tw.WriteJSON("ACP", map[string]any{
-		"event":        "prompt/request",
-		"user_message": promptContent,
-		"session_id":   string(sessionID),
-	})
 
 	// Determine prompt timeout — default 5 min, overrideable via VESSEL_TIMEOUT (seconds).
 	timeoutSecs := 300
@@ -611,7 +559,7 @@ func main() {
 		stopReason = string(promptResult.StopReason)
 	}
 
-	// Step 9/10: Handle prompt completion.
+	// Handle prompt completion or error.
 	if err != nil || stopReason != "end_turn" {
 		var promptErr error
 		if err != nil {
@@ -624,90 +572,18 @@ func main() {
 		acpPromptSpan.RecordError(promptErr)
 		acpPromptSpan.SetStatus(codes.Error, promptErr.Error())
 		acpPromptSpan.End()
-		_ = tw.WriteJSON("ACP", map[string]any{
-			"event":       "prompt/error",
-			"error":       promptErr.Error(),
-			"stop_reason": stopReason,
-		})
-		markFailed(issueID, "ACP error")
 		die("prompt failed", promptErr)
 	}
 	acpPromptSpan.SetStatus(codes.Ok, "")
 	acpPromptSpan.End()
 	slog.InfoContext(ctx, "prompt complete", "stop_reason", stopReason)
-	_ = tw.WriteJSON("ACP", map[string]any{
-		"event":       "prompt/response",
-		"stop_reason": stopReason,
-		"status":      "ok",
+
+	// Write success result for the post-run hook to consume.
+	writeResult(vesselResult{
+		IssueID: issueID,
+		Status:  "success",
+		Branch:  branch,
 	})
-
-	// Steps 9a–9c: git add + commit + push.
-	_, pushSpan := tracer.Start(ctx, "legion.vessel.git.push",
-		trace.WithAttributes(attribute.String("git.branch", branch)),
-	)
-
-	// Step 9a: git add -A.
-	if err := runCmd("/workspace", "git", "add", "-A"); err != nil {
-		pushSpan.RecordError(err)
-		pushSpan.SetStatus(codes.Error, err.Error())
-		pushSpan.End()
-		_ = tw.Write("GIT", fmt.Sprintf("add failed: %v", err))
-		markFailed(issueID, "git add failed")
-		die("git add failed", err)
-	}
-	_ = tw.Write("GIT", "staged all changes")
-
-	// Step 9b: git commit.
-	commitMsg := fmt.Sprintf("feat(%s): %s", issueID, issue.Title)
-	if err := runCmd("/workspace",
-		"git",
-		"-c", "user.email=vessel@legion",
-		"-c", "user.name=Vessel",
-		"commit", "-m", commitMsg,
-	); err != nil {
-		pushSpan.RecordError(err)
-		pushSpan.SetStatus(codes.Error, err.Error())
-		pushSpan.End()
-		_ = tw.Write("GIT", fmt.Sprintf("commit failed: %v", err))
-		markFailed(issueID, "git commit failed")
-		die("git commit failed", err)
-	}
-	_ = tw.Write("GIT", fmt.Sprintf("committed: %s", commitMsg))
-
-	// Step 9c: git push.
-	// gh auth setup-git already wired the credential helper, so the clone URL
-	// is used as-is — no token injection into the remote URL needed.
-	if err := runCmd("/workspace", "git", "push", "origin", branch); err != nil {
-		pushSpan.RecordError(err)
-		pushSpan.SetStatus(codes.Error, err.Error())
-		pushSpan.End()
-		_ = tw.Write("GIT", fmt.Sprintf("push failed: %v", err))
-		markFailed(issueID, "git push failed")
-		die("git push failed", err)
-	}
-	pushSpan.End()
-	_ = tw.Write("GIT", fmt.Sprintf("pushed branch %s to origin", branch))
-
-	// Step 9d: close the issue.
-	_, beadsCloseSpan := tracer.Start(ctx, "legion.vessel.beads.close",
-		trace.WithAttributes(attribute.String("issue.id", issueID)),
-	)
-
-	// Write final success status
-	_ = tw.WriteJSON("VESSEL", map[string]any{
-		"event":       "completion",
-		"status":      "success",
-		"branch":      branch,
-		"stop_reason": stopReason,
-		"message":     "vessel-driver execution completed successfully",
-	})
-
-	if err := runCmd("/workspace", "bd", "close", issueID, "--reason", "completed"); err != nil {
-		beadsCloseSpan.RecordError(err)
-		beadsCloseSpan.SetStatus(codes.Error, err.Error())
-		slog.WarnContext(ctx, "bd close failed — issue may need manual close", "issue_id", issueID, "err", err)
-	}
-	beadsCloseSpan.End()
 
 	// Mark root span successful before deferred End() fires.
 	rootSpan.SetStatus(codes.Ok, "")
@@ -718,111 +594,4 @@ func main() {
 
 	slog.InfoContext(ctx, "vessel complete", "issue_id", issueID, "branch", branch)
 	// rootSpan.End() and shutdown(ctx) called by defer — spans flushed to Jaeger.
-}
-
-// requireEnv returns the value of an env var or exits 1.
-// Called before telemetry is initialised, so plain slog (no context) is used.
-func requireEnv(name string) string {
-	v := os.Getenv(name)
-	if v == "" {
-		slog.Error("required env var not set", "name", name)
-		os.Exit(1)
-	}
-	return v
-}
-
-// issueCore holds the fields of a Beads issue nested inside the "issue" envelope.
-type issueCore struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-}
-
-// bdShow calls `bd show <id> --json` from dir and parses the result.
-// bd show returns a single-element flat array: [{"id":"...","title":"...",...}]
-func bdShow(dir, id string) (*issueCore, error) {
-	out, err := execOutput(dir, "bd", "show", id, "--json")
-	if err != nil {
-		return nil, err
-	}
-	var items []issueCore
-	if err := json.Unmarshal(out, &items); err != nil {
-		return nil, fmt.Errorf("bd show: parse JSON: %w", err)
-	}
-	if len(items) == 0 {
-		return nil, fmt.Errorf("bd show: empty result")
-	}
-	return &items[0], nil
-}
-
-// markFailed marks an issue blocked with a "failed" label and appends a reason note.
-// Beads uses "blocked" as the terminal-error status; the "failed" label distinguishes
-// error-exits from genuine dependency blocks.
-func markFailed(issueID, reason string) {
-	if err := runCmd("/workspace", "bd", "update", issueID, "--status=blocked", "--add-label", "failed", "--append-notes="+reason); err != nil {
-		slog.Warn("could not mark issue failed", "issue_id", issueID, "err", err)
-	}
-}
-
-// runCmd runs a command in dir, logging stderr on failure.
-func runCmd(dir, name string, args ...string) error {
-	cmd := exec.Command(name, args...)
-	if dir != "" {
-		cmd.Dir = dir
-	}
-	cmd.Stdout = os.Stdout
-	stderr := &strings.Builder{}
-	cmd.Stderr = stderr
-	if err := cmd.Run(); err != nil {
-		if stderr.Len() > 0 {
-			return fmt.Errorf("%s %v: %w\nstderr: %s", name, args, err, stderr.String())
-		}
-		return fmt.Errorf("%s %v: %w", name, args, err)
-	}
-	return nil
-}
-
-// execOutput runs a command and captures stdout.
-func execOutput(dir, name string, args ...string) ([]byte, error) {
-	cmd := exec.Command(name, args...)
-	if dir != "" {
-		cmd.Dir = dir
-	}
-	stderr := &strings.Builder{}
-	cmd.Stderr = stderr
-	out, err := cmd.Output()
-	if err != nil {
-		if stderr.Len() > 0 {
-			return nil, fmt.Errorf("%s %v: %w\nstderr: %s", name, args, err, stderr.String())
-		}
-		return nil, fmt.Errorf("%s %v: %w", name, args, err)
-	}
-	return out, nil
-}
-
-// issueMode returns "review" or "work" based on issue labels.
-// Used in Phase 2 (lg-b47) to dispatch Inquisitor review sessions.
-func issueMode(labels []string) string {
-	for _, l := range labels {
-		if l == "type:review" {
-			return "review"
-		}
-	}
-	return "work"
-}
-
-// setupGitCredentials configures git's credential helper via `gh auth setup-git`
-// so that the token never appears in remote URLs or log output.
-// GH_TOKEN is set in-process so the gh invocation picks it up automatically.
-func setupGitCredentials(token string) error {
-	if err := os.Setenv("GH_TOKEN", token); err != nil {
-		return fmt.Errorf("set GH_TOKEN: %w", err)
-	}
-	cmd := exec.CommandContext(context.Background(), "gh", "auth", "setup-git")
-	var stderr strings.Builder
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("gh auth setup-git: %w: %s", err, strings.TrimSpace(stderr.String()))
-	}
-	return nil
 }

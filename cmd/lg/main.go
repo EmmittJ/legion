@@ -22,6 +22,8 @@ func main() {
 	}
 
 	switch os.Args[1] {
+	case "init":
+		cmdInit()
 	case "invoke":
 		cmdInvoke()
 	case "status":
@@ -39,6 +41,7 @@ func main() {
 
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
+	fmt.Fprintln(os.Stderr, "  lg init                                 — scaffold a Legion workspace in the current repo")
 	fmt.Fprintln(os.Stderr, "  lg invoke \"<title>\" [--agent <name>]  — create a new task issue; optionally")
 	fmt.Fprintln(os.Stderr, "                                           route to a known agent by name")
 	fmt.Fprintln(os.Stderr, "  lg status                               — list open and in-progress issues")
@@ -47,9 +50,277 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  lg watch [--interval=N]                 — live-refreshing status dashboard (default: 3s)")
 }
 
-// cmdInvoke creates a new Beads task issue.
+// ── Scaffold constants ────────────────────────────────────────────────────────
+
+const scaffoldArchonTOML = `[daemon]
+pulse_interval_seconds = 10
+watcher_interval_seconds = 30
+vessel_timeout_seconds = 1800
+
+[limits]
+max_global = 5
+
+[limits.by_role]
+worker = 3
+inquisitor = 1
+oracle = 2
+hierophant = 1
+weaver = 1
+
+[routing]
+router_agent = "hermes"
+default_role = "worker"
+max_dispatch = 3
+
+[review]
+enabled = false
+max_rework = 3
+delete_branch_on_merge = true
+`
+
+const scaffoldRoutesTOML = `# Oracle reads this as hint data for routing decisions.
+# Add rules to help Oracle classify incoming lg invoke requests.
+
+[[rule]]
+pattern = "review"
+role = "inquisitor"
+
+[[rule]]
+pattern = "plan|architect|design"
+role = "hierophant"
+
+[[rule]]
+pattern = ".*"
+role = "worker"
+`
+
+// scaffoldOracleAgent is the Oracle Pact — the human-facing intake agent file
+// written by lg init. Oracle gathers intent; it does NOT route.
+// Backticks are concatenated as string literals since Go raw strings cannot
+// contain backticks.
+var scaffoldOracleAgent = `---
+name: oracle
+description: >
+  Legion's human-facing intake agent. Receives intent from a Summoner over
+  multiple turns, asks clarifying questions until the scope is clear, then
+  commits the work as a bead in the Grimoire. Oracle does not route, dispatch,
+  or decide which vessel handles the work — that is Hermes's job.
+---
+
+## Identity
+
+You are Oracle — Legion's face to the outside world. You listen, you clarify,
+you record. You do not implement. You do not review. You do not route.
+You gather intent and write it down.
+
+## Responsibilities
+
+1. Receive a request from the Summoner (human operator)
+2. Ask clarifying questions — one at a time — until you have a clear, actionable picture
+3. Confirm your understanding: "I'll create a bead for: [what you understood]"
+4. When you have full clarity, create the bead:
+   ` + "`" + `bd create "[clear task title]" --description="[full clarified scope in plain prose]" --json` + "`" + `
+   Then confirm the bead ID back to the Summoner and stop.
+
+## What you must NOT do
+
+- Do not decide which vessel type handles the work — that is Hermes
+- Do not add routing labels (` + "`" + `role:*` + "`" + `) yourself — Hermes reads the bead and routes it
+- Do not implement anything — you are intake only
+- Do not close or update beads after creation
+
+## Clarifying question guide
+
+Ask about:
+- **Scope**: what exactly needs to change, and what is out of scope
+- **Acceptance**: how will the Summoner know the work is done
+- **Dependencies**: does this block or depend on anything else
+
+Stop asking when you could hand the bead description to a new engineer and they
+would know exactly what to do without further questions. One well-scoped bead
+per invocation.
+`
+
+// scaffoldHermesAgent is the Hermes Pact — the routing vessel file written by
+// lg init. Hermes reads a single bead and emits a routing decision.
+// Backticks are concatenated as string literals since Go raw strings cannot
+// contain backticks.
+var scaffoldHermesAgent = `---
+name: hermes
+description: >
+  Legion's routing vessel. Reads a single unlabeled bead and emits a structured
+  routing decision — one vessel class, no conversation. Short-lived and
+  deterministic. One bead in, one decision out.
+---
+
+## Identity
+
+You are Hermes — Legion's router. You read beads and classify them.
+You do not converse. You do not implement. You emit one decision and exit.
+
+## Input
+
+You receive ` + "`" + `LEGION_CONFIG_JSON` + "`" + ` containing ` + "`" + `issue_id` + "`" + `. It does not contain bead content.
+
+## Process
+
+1. Parse ` + "`" + `issue_id` + "`" + ` from ` + "`" + `LEGION_CONFIG_JSON` + "`" + `
+2. Run ` + "`" + `bd show <issue_id> --json` + "`" + ` to retrieve title and description
+3. Check ` + "`.legion/routes.toml`" + ` for matching rules (top-to-bottom, first match wins)
+4. Apply the routing rules below if no file match is found
+5. Emit the routing decision: ` + "`" + `bd update <issue_id> --add-label "role:<class>"` + "`" + `
+6. Exit 0
+
+## Vessel classes
+
+| Class | Handles |
+|---|---|
+| ` + "`" + `worker` + "`" + ` | Code changes, bug fixes, feature implementation |
+| ` + "`" + `hierophant` + "`" + ` | Planning, architecture, breaking down vague intent into a dependency graph |
+| ` + "`" + `inquisitor` + "`" + ` | Code review, CI validation, pass/fail verdicts |
+| ` + "`" + `weaver` + "`" + ` | Merge operations — combines branches after inquisitor approval |
+
+## Default routing rules
+
+- Title/description contains "plan", "architect", "design", "break down", "decompose" → ` + "`" + `hierophant` + "`" + `
+- Title/description contains "review", "audit", "check", "validate", "test" → ` + "`" + `inquisitor` + "`" + `
+- Title/description contains "merge", "integrate", "land" → ` + "`" + `weaver` + "`" + `
+- Everything else → ` + "`" + `worker` + "`" + `
+
+When in doubt, route to ` + "`" + `worker` + "`" + `. A worker can escalate.
+
+## Output contract
+
+Exactly one ` + "`" + `bd update` + "`" + ` call. No other side effects. No conversation.
+`
+
+// ── cmdInit ───────────────────────────────────────────────────────────────────
+
+// cmdInit scaffolds a Legion workspace in the current repo.
+// It is idempotent: prints "Created:" or "Exists:" for each artifact.
+// Never overwrites existing files.
 //
-//	lg invoke "Fix the login bug" [--agent <name>]
+//	lg init
+func cmdInit() {
+	// ── 1. Role beads ────────────────────────────────────────────────────────
+	rolesToCreate := []struct {
+		title       string
+		description string
+	}{
+		{"worker", "Worker vessel: writes code on a branch, commits, pushes PR"},
+		{"oracle", "Oracle vessel: human-facing intake; gathers intent from Summoner and creates beads"},
+		{"hermes", "Hermes vessel: routing vessel; reads a bead and emits a role label (one bead in, one decision out)"},
+		{"hierophant", "Hierophant vessel: expands vague intent into dependency graph of issues"},
+		{"inquisitor", "Inquisitor vessel: peer reviews code and runs CI; delivers pass/fail verdict"},
+		{"weaver", "Weaver vessel: merges approved branches after inquisitor sign-off"},
+	}
+
+	// Discover roles that already exist so we don't create duplicates.
+	existingRoles := map[string]bool{}
+	if out, err := bdOutput("list", "--type=role", "--json"); err == nil {
+		var items []struct {
+			Title string `json:"title"`
+		}
+		if json.Unmarshal(out, &items) == nil {
+			for _, it := range items {
+				existingRoles[it.Title] = true
+			}
+		}
+	}
+
+	for _, role := range rolesToCreate {
+		if existingRoles[role.title] {
+			fmt.Printf("Exists:  role:%s\n", role.title)
+			continue
+		}
+		if _, err := bdOutput("create", role.title, "--type=role",
+			"--description="+role.description, "--json"); err != nil {
+			fmt.Fprintf(os.Stderr, "lg init: create role %s: %v\n", role.title, err)
+		} else {
+			fmt.Printf("Created: role:%s\n", role.title)
+		}
+	}
+
+	// ── 2. Scaffold files ─────────────────────────────────────────────────────
+	root, err := gitRoot()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "lg init: could not determine repo root: %v\n", err)
+		os.Exit(1)
+	}
+
+	legionDir := filepath.Join(root, ".legion")
+	if err := os.MkdirAll(legionDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "lg init: mkdir .legion: %v\n", err)
+		os.Exit(1)
+	}
+
+	writeScaffoldFile(root, filepath.Join(legionDir, "archon.toml"), scaffoldArchonTOML)
+	writeScaffoldFile(root, filepath.Join(legionDir, "routes.toml"), scaffoldRoutesTOML)
+	writeScaffoldFile(root, filepath.Join(legionDir, ".gitkeep"), "")
+
+	// ── 3. .gitignore ─────────────────────────────────────────────────────────
+	appendLineIfAbsent(root, filepath.Join(root, ".gitignore"), ".legion/context/")
+
+	// ── 4. oracle.agent.md ────────────────────────────────────────────────────
+	agentsDir := filepath.Join(root, ".github", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "lg init: mkdir .github/agents: %v\n", err)
+		os.Exit(1)
+	}
+	writeScaffoldFile(root, filepath.Join(agentsDir, "oracle.agent.md"), scaffoldOracleAgent)
+	writeScaffoldFile(root, filepath.Join(agentsDir, "hermes.agent.md"), scaffoldHermesAgent)
+}
+
+// writeScaffoldFile writes content to path only if the file does not already
+// exist. Prints "Created: <rel>" or "Exists:  <rel>" relative to repoRoot.
+func writeScaffoldFile(repoRoot, path, content string) {
+	rel := scaffoldRel(repoRoot, path)
+	if _, err := os.Stat(path); err == nil {
+		fmt.Printf("Exists:  %s\n", rel)
+		return
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "lg init: write %s: %v\n", rel, err)
+		return
+	}
+	fmt.Printf("Created: %s\n", rel)
+}
+
+// appendLineIfAbsent appends line to path (creating the file if needed) unless
+// the line is already present. Prints "Updated:" or "Exists:" accordingly.
+func appendLineIfAbsent(repoRoot, path, line string) {
+	rel := scaffoldRel(repoRoot, path)
+	existing, readErr := os.ReadFile(path)
+	if readErr == nil && strings.Contains(string(existing), line) {
+		fmt.Printf("Exists:  %s (%s)\n", rel, line)
+		return
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "lg init: update %s: %v\n", rel, err)
+		return
+	}
+	defer f.Close()
+	// Ensure the new entry starts on its own line.
+	prefix := "\n"
+	if readErr == nil && len(existing) > 0 && existing[len(existing)-1] == '\n' {
+		prefix = ""
+	}
+	fmt.Fprintf(f, "%s%s\n", prefix, line)
+	fmt.Printf("Updated: %s (+%s)\n", rel, line)
+}
+
+// scaffoldRel returns path relative to repoRoot for display; falls back to the
+// full path on error.
+func scaffoldRel(repoRoot, path string) string {
+	rel, err := filepath.Rel(repoRoot, path)
+	if err != nil {
+		return path
+	}
+	return filepath.ToSlash(rel)
+}
+
+// lg invoke "Fix the login bug" [--agent <name>]
 func cmdInvoke() {
 	if len(os.Args) < 3 {
 		fmt.Fprintln(os.Stderr, "lg invoke: title required")

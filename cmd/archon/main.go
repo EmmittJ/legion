@@ -221,6 +221,25 @@ func agentLabel(iss issueItem) string {
 	return ""
 }
 
+// roleLabel extracts the role label value from a beads issue.
+// Labels are formatted as "key:value". Returns empty string if no role label found.
+func roleLabel(iss issueItem) string {
+	for _, l := range iss.Labels {
+		if strings.HasPrefix(l, "role:") {
+			return strings.TrimPrefix(l, "role:")
+		}
+	}
+	return ""
+}
+
+// inferRole returns the role for an issue: explicit role label > default role from config.
+func inferRole(iss issueItem, defaultRole string) string {
+	if r := roleLabel(iss); r != "" {
+		return r
+	}
+	return defaultRole
+}
+
 type containerState struct {
 	Status   string `json:"Status"`
 	ExitCode int    `json:"ExitCode"`
@@ -449,7 +468,7 @@ func pulse(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *trac
 			continue
 		}
 		agent := agentLabel(iss)
-		roleName := acfg.Routing.DefaultRole
+		roleName := inferRole(iss, acfg.Routing.DefaultRole)
 		if vesselLimitReached(t, acfg, roleName, agent) {
 			slog.DebugContext(ctx, "pulse: vessel limit reached", "role", roleName, "agent", agent)
 			continue
