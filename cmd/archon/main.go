@@ -37,10 +37,11 @@ type config struct {
 
 // entry tracks a running vessel container.
 type entry struct {
-	issueID   string
-	startedAt time.Time
-	roleName  string
-	agentName string
+	issueID    string
+	issueTitle string
+	startedAt  time.Time
+	roleName   string
+	agentName  string
 }
 
 // tracker holds the set of vessel containers Archon is currently managing.
@@ -56,14 +57,15 @@ func (t *tracker) has(name string) bool {
 	return ok
 }
 
-func (t *tracker) add(name, issueID, roleName, agentName string) {
+func (t *tracker) add(name, issueID, issueTitle, roleName, agentName string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.runs[name] = entry{
-		issueID:   issueID,
-		startedAt: time.Now(),
-		roleName:  roleName,
-		agentName: agentName,
+		issueID:    issueID,
+		issueTitle: issueTitle,
+		startedAt:  time.Now(),
+		roleName:   roleName,
+		agentName:  agentName,
 	}
 }
 
@@ -182,10 +184,12 @@ type obs struct {
 
 // The JSON output is a flat array — no wrapping "issue" key.
 type issueItem struct {
-	ID     string   `json:"id"`
-	Title  string   `json:"title"`
-	Status string   `json:"status"`
-	Labels []string `json:"labels"`
+	ID                 string   `json:"id"`
+	Title              string   `json:"title"`
+	Status             string   `json:"status"`
+	Labels             []string `json:"labels"`
+	Description        string   `json:"description"`
+	AcceptanceCriteria string   `json:"acceptance_criteria"`
 }
 
 // isInfraIssue returns true for issues that carry infrastructure labels
@@ -329,7 +333,53 @@ func markBlocked(ctx context.Context, issueID, note string) {
 	}
 }
 
-func spawnVessel(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, issueID, name, roleName, agentName string, o *obs) error {
+// exitLabel maps a vessel-driver exit code to a Beads label string.
+// Codes are defined in the vessel-driver boundary ADR (lg-fzl):
+//
+//	0 = end_turn (success)
+//	1 = acp-internal error
+//	2 = refusal
+//	3 = max_tokens
+//	4 = timeout
+func exitLabel(code int) string {
+	switch code {
+	case 2:
+		return "failed:refusal"
+	case 3:
+		return "failed:tokens"
+	case 4:
+		return "failed:timeout"
+	default: // 1 or unknown non-zero
+		return "failed:internal"
+	}
+}
+
+// markBlockedWithLabel marks an issue blocked and attaches a specific failure label.
+// Best-effort: logs on failure, never crashes Archon.
+func markBlockedWithLabel(ctx context.Context, issueID, label string) {
+	if _, err := run("bd", "update", issueID, "--status=blocked", "--add-label", label); err != nil {
+		slog.ErrorContext(ctx, "marking issue blocked", "issue_id", issueID, "label", label, "err", err)
+	}
+}
+
+// createReviewBead creates an Inquisitor review bead in Beads after a worker vessel
+// exits cleanly. Best-effort: logs on failure, never crashes Archon.
+func createReviewBead(ctx context.Context, issueID, issueTitle string) {
+	_, err := run("bd", "create",
+		"Review: "+issueTitle,
+		"--description=Review output of vessel "+issueID+". Branch: vessel/"+issueID+".",
+		"--add-label", "role:inquisitor",
+		"--add-label", "discovered-from:"+issueID,
+		"-t", "task",
+		"-p", "1",
+		"--json",
+	)
+	if err != nil {
+		slog.ErrorContext(ctx, "creating review bead", "issue_id", issueID, "err", err)
+	}
+}
+
+func spawnVessel(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, issueID, name, roleName, agentName, issueTitle, issueDescription, issueAC string, o *obs) error {
 	ctx, span := o.tracer.Start(ctx, "legion.archon.vessel.spawn",
 		trace.WithAttributes(
 			attribute.String("issue.id", issueID),
@@ -383,6 +433,9 @@ func spawnVessel(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, i
 		"-e", "GITHUB_TOKEN=" + cfg.githubToken,
 		"-e", "DOLT_HOST=" + cfg.doltHost,
 		"-e", "DOLT_PORT=" + cfg.doltPort,
+		"-e", "ISSUE_TITLE=" + issueTitle,
+		"-e", "ISSUE_DESCRIPTION=" + issueDescription,
+		"-e", "ISSUE_AC=" + issueAC,
 	}
 	if ep := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); ep != "" {
 		args = append(args, "-e", "OTEL_EXPORTER_OTLP_ENDPOINT="+ep)
@@ -478,12 +531,12 @@ func pulse(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *trac
 			slog.ErrorContext(ctx, "claim issue (skipping)", "issue_id", iss.ID, "err", err)
 			continue
 		}
-		if err := spawnVessel(ctx, cfg, acfg, iss.ID, name, roleName, agent, o); err != nil {
+		if err := spawnVessel(ctx, cfg, acfg, iss.ID, name, roleName, agent, iss.Title, iss.Description, iss.AcceptanceCriteria, o); err != nil {
 			slog.ErrorContext(ctx, "spawning vessel", "issue_id", iss.ID, "err", err)
 			markError(ctx, iss.ID, fmt.Sprintf("spawn failed: %v", err))
 			continue
 		}
-		t.add(name, iss.ID, roleName, agent)
+		t.add(name, iss.ID, iss.Title, roleName, agent)
 		slog.InfoContext(ctx, "spawned vessel", "container", name, "issue_id", iss.ID, "agent", agent, "role", roleName)
 		spawned++
 	}
@@ -534,19 +587,23 @@ func watch(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *trac
 			))
 			o.vesselDuration.Record(ctx, time.Since(e.startedAt).Seconds())
 			markDone(ctx, e.issueID)
+			if acfg.Review.Enabled && e.issueTitle != "" {
+				createReviewBead(ctx, e.issueID, e.issueTitle)
+			}
 			removeContainer(ctx, name)
 			t.remove(name)
 			delete(lastHeartbeat, name)
 
 		case state.Status == "exited":
+			label := exitLabel(state.ExitCode)
 			slog.WarnContext(ctx, "vessel exited with error",
-				"container", name, "exit_code", state.ExitCode, "issue_id", e.issueID)
+				"container", name, "exit_code", state.ExitCode, "issue_id", e.issueID, "label", label)
 			span.AddEvent("vessel.exit", trace.WithAttributes(
 				attribute.String("issue.id", e.issueID),
 				attribute.Int("exit_code", state.ExitCode),
 			))
 			o.vesselDuration.Record(ctx, time.Since(e.startedAt).Seconds())
-			markError(ctx, e.issueID, fmt.Sprintf("vessel exited with code %d", state.ExitCode))
+			markBlockedWithLabel(ctx, e.issueID, label)
 			removeContainer(ctx, name)
 			t.remove(name)
 			delete(lastHeartbeat, name)

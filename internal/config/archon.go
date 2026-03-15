@@ -88,6 +88,7 @@ func defaultArchonConfig() ArchonConfig {
 			DispatcherMode: "keyword",
 		},
 		Review: ArchonReview{
+			Enabled:             true,
 			MaxRework:           3,
 			DeleteBranchOnMerge: true,
 		},
@@ -162,8 +163,8 @@ func applyEnvOverrides(cfg *ArchonConfig) {
 	if v := os.Getenv("LEGION_DEFAULT_ROLE"); v != "" {
 		cfg.Routing.DefaultRole = v
 	}
-	if v := os.Getenv("LEGION_REVIEW_ENABLED"); v == "true" {
-		cfg.Review.Enabled = true
+	if v := os.Getenv("LEGION_REVIEW_ENABLED"); v != "" {
+		cfg.Review.Enabled = v == "true"
 	}
 	if v := os.Getenv("LEGION_MAX_REWORK"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
