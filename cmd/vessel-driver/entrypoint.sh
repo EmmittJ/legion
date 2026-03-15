@@ -23,6 +23,11 @@ set -euo pipefail
 export BEADS_DOLT_SERVER_HOST="${DOLT_HOST:-dolt}"
 export BEADS_DOLT_SERVER_PORT="${DOLT_PORT:-3306}"
 
+# Copilot CLI authenticates via GH_TOKEN.  Archon passes GITHUB_TOKEN — alias it
+# here so vessel-driver, pre-run.sh, and post-run.sh all see the same credential
+# under the name the Copilot CLI expects.
+export GH_TOKEN="${GITHUB_TOKEN}"
+
 /hooks/pre-run.sh
 /vessel-driver || true   # always continues; result.json carries status="error" on failure
 /hooks/post-run.sh       # always runs; exits 1 on error path, 0 on success

@@ -1,20 +1,23 @@
 # Archon — Legion controller binary
-# Multi-stage: golang:1.25-alpine builder → debian:bookworm-slim runtime
+# Multi-stage: golang:1.26-alpine builder → debian:bookworm-slim runtime
 #
 # Build (from repo root):
-#   docker build -f cmd/archon/Dockerfile -t legion/archon:latest .
+#   docker build -f cmd/archon/Dockerfile -t legion-archon:latest .
 #
 # The final image is debian:bookworm-slim: static binary + bd CLI + CA certs.
 # Archon runs as root (required for /var/run/docker.sock access).
 
 # ── Stage 1: builder ──────────────────────────────────────────────────────────
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /build
 
-# Copy module manifests first — layer caches dependency downloads separately
-# from source changes, keeping incremental rebuilds fast.
+# Copy module manifests and the local replace module first — layer caches
+# dependency downloads separately from source changes, keeping incremental
+# rebuilds fast.  third_party/ must be present before go mod download because
+# go.mod carries: replace github.com/ironpark/go-acp => ./third_party/go-acp
 COPY go.mod go.sum ./
+COPY third_party/ third_party/
 RUN go mod download
 
 # Copy full source and build.
