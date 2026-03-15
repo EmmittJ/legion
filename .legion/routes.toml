@@ -1,0 +1,16 @@
+# Hermes reads this file for routing hint rules.
+# Add rules to help Oracle classify incoming lg invoke requests.
+# Optional: add model = "fast|standard|premium" to any rule to pin a model tier.
+
+[[rule]]
+pattern = "review"
+role = "inquisitor"
+# model = "premium"
+
+[[rule]]
+pattern = "plan|architect|design"
+role = "hierophant"
+
+[[rule]]
+pattern = ".*"
+role = "worker"
