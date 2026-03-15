@@ -42,8 +42,8 @@ func main() {
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
 	fmt.Fprintln(os.Stderr, "  lg init                                 — scaffold a Legion workspace in the current repo")
-	fmt.Fprintln(os.Stderr, "  lg invoke \"<title>\" [--agent <name>]  — create a new task issue; optionally")
-	fmt.Fprintln(os.Stderr, "                                           route to a known agent by name")
+	fmt.Fprintln(os.Stderr, "  lg invoke \"<title>\" [--agent <name>] [--model <tier|name>]  — create a new task issue; optionally")
+	fmt.Fprintln(os.Stderr, "                                           route to a known agent by name or pin a model tier/ID")
 	fmt.Fprintln(os.Stderr, "  lg status                               — list open and in-progress issues")
 	fmt.Fprintln(os.Stderr, "  lg log <issue-id> [--follow]            — print ACP execution traces for an issue;")
 	fmt.Fprintln(os.Stderr, "                                           --follow polls every 2s and tails new lines")
@@ -464,17 +464,18 @@ func scaffoldRel(repoRoot, path string) string {
 	return filepath.ToSlash(rel)
 }
 
-// lg invoke "Fix the login bug" [--agent <name>]
+// lg invoke "Fix the login bug" [--agent <name>] [--model <tier|name>]
 func cmdInvoke() {
 	if len(os.Args) < 3 {
 		fmt.Fprintln(os.Stderr, "lg invoke: title required")
-		fmt.Fprintln(os.Stderr, "  usage: lg invoke \"<title>\" [--agent <name>]")
+		fmt.Fprintln(os.Stderr, "  usage: lg invoke \"<title>\" [--agent <name>] [--model <tier|name>]")
 		os.Exit(1)
 	}
 	title := os.Args[2]
 
-	// Parse --agent <name> or --agent=<name> from remaining args.
+	// Parse --agent <name> or --agent=<name> and --model <value> or --model=<value> from remaining args.
 	agentName := ""
+	modelValue := ""
 	rest := os.Args[3:]
 	for i := 0; i < len(rest); i++ {
 		switch {
@@ -488,6 +489,16 @@ func cmdInvoke() {
 			i++ // consume value
 		case strings.HasPrefix(rest[i], "--agent="):
 			agentName = strings.TrimPrefix(rest[i], "--agent=")
+		case rest[i] == "--model":
+			if i+1 >= len(rest) {
+				fmt.Fprintln(os.Stderr, "lg invoke: --model requires a value")
+				fmt.Fprintln(os.Stderr, "  usage: lg invoke \"<title>\" --model <tier|name>")
+				os.Exit(1)
+			}
+			modelValue = rest[i+1]
+			i++ // consume value
+		case strings.HasPrefix(rest[i], "--model="):
+			modelValue = strings.TrimPrefix(rest[i], "--model=")
 		default:
 			fmt.Fprintf(os.Stderr, "lg invoke: unknown flag %q\n", rest[i])
 			os.Exit(1)
@@ -512,6 +523,9 @@ func cmdInvoke() {
 	bdArgs := []string{"create", title, "--type=task", "--description=" + title}
 	if agentName != "" {
 		bdArgs = append(bdArgs, "--labels", "agent:"+agentName)
+	}
+	if modelValue != "" {
+		bdArgs = append(bdArgs, "--labels", "model:"+modelValue)
 	}
 	bdArgs = append(bdArgs, "--json")
 

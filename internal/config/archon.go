@@ -66,7 +66,9 @@ type ArchonReview struct {
 
 // ArchonVessel holds per-vessel defaults forwarded into containers.
 type ArchonVessel struct {
-	DefaultModel string `toml:"default_model"`
+	DefaultModel      string            `toml:"default_model"`
+	ModelTiers        map[string]string `toml:"model_tiers"`
+	RoleModelDefaults map[string]string `toml:"role_model_defaults"`
 }
 
 // defaultArchonConfig returns a fully populated ArchonConfig with safe defaults.
@@ -91,6 +93,20 @@ func defaultArchonConfig() ArchonConfig {
 			Enabled:             true,
 			MaxRework:           3,
 			DeleteBranchOnMerge: true,
+		},
+		Vessel: ArchonVessel{
+			DefaultModel: "",
+			ModelTiers: map[string]string{
+				"fast":     "claude-haiku-4.5",
+				"standard": "claude-sonnet-4.6",
+				"premium":  "claude-opus-4.6",
+			},
+			RoleModelDefaults: map[string]string{
+				"worker":     "standard",
+				"reviewer":   "premium",
+				"dispatcher": "fast",
+				"planner":    "standard",
+			},
 		},
 	}
 }
