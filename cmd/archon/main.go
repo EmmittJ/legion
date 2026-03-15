@@ -225,10 +225,10 @@ func agentLabel(iss issueItem) string {
 	return ""
 }
 
-// roleLabel extracts the role label value from a beads issue.
+// roleLabel extracts the role label value from an issue's label slice.
 // Labels are formatted as "key:value". Returns empty string if no role label found.
-func roleLabel(iss issueItem) string {
-	for _, l := range iss.Labels {
+func roleLabel(labels []string) string {
+	for _, l := range labels {
 		if strings.HasPrefix(l, "role:") {
 			return strings.TrimPrefix(l, "role:")
 		}
@@ -236,9 +236,41 @@ func roleLabel(iss issueItem) string {
 	return ""
 }
 
+// modelLabel extracts the model label value from an issue's label slice.
+// Labels are formatted as "key:value". Returns empty string if no model label found.
+func modelLabel(labels []string) string {
+	for _, l := range labels {
+		if strings.HasPrefix(l, "model:") {
+			return strings.TrimPrefix(l, "model:")
+		}
+	}
+	return ""
+}
+
+// resolveModel determines which model to use for a vessel by consulting, in order:
+//  1. Explicit model: label on the issue — highest priority
+//  2. Role-based default via ModelTiers
+//  3. Configured DefaultModel
+//  4. Hardcoded fallback ("claude-sonnet-4.6")
+func resolveModel(cfg archoncfg.ArchonConfig, labels []string) string {
+	if m := modelLabel(labels); m != "" {
+		return m
+	}
+	role := roleLabel(labels)
+	if tier, ok := cfg.Vessel.RoleModelDefaults[role]; ok {
+		if model, ok := cfg.Vessel.ModelTiers[tier]; ok {
+			return model
+		}
+	}
+	if cfg.Vessel.DefaultModel != "" {
+		return cfg.Vessel.DefaultModel
+	}
+	return "claude-sonnet-4.6"
+}
+
 // inferRole returns the role for an issue: explicit role label > default role from config.
 func inferRole(iss issueItem, defaultRole string) string {
-	if r := roleLabel(iss); r != "" {
+	if r := roleLabel(iss.Labels); r != "" {
 		return r
 	}
 	return defaultRole
@@ -379,7 +411,7 @@ func createReviewBead(ctx context.Context, issueID, issueTitle string) {
 	}
 }
 
-func spawnVessel(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, issueID, name, roleName, agentName, issueTitle, issueDescription, issueAC string, o *obs) error {
+func spawnVessel(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, issueID, name, roleName, agentName, issueTitle, issueDescription, issueAC string, labels []string, o *obs) error {
 	ctx, span := o.tracer.Start(ctx, "legion.archon.vessel.spawn",
 		trace.WithAttributes(
 			attribute.String("issue.id", issueID),
@@ -436,6 +468,7 @@ func spawnVessel(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, i
 		"-e", "ISSUE_TITLE=" + issueTitle,
 		"-e", "ISSUE_DESCRIPTION=" + issueDescription,
 		"-e", "ISSUE_AC=" + issueAC,
+		"-e", "LEGION_MODEL=" + resolveModel(acfg, labels),
 	}
 	if ep := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); ep != "" {
 		args = append(args, "-e", "OTEL_EXPORTER_OTLP_ENDPOINT="+ep)
@@ -531,7 +564,7 @@ func pulse(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *trac
 			slog.ErrorContext(ctx, "claim issue (skipping)", "issue_id", iss.ID, "err", err)
 			continue
 		}
-		if err := spawnVessel(ctx, cfg, acfg, iss.ID, name, roleName, agent, iss.Title, iss.Description, iss.AcceptanceCriteria, o); err != nil {
+		if err := spawnVessel(ctx, cfg, acfg, iss.ID, name, roleName, agent, iss.Title, iss.Description, iss.AcceptanceCriteria, iss.Labels, o); err != nil {
 			slog.ErrorContext(ctx, "spawning vessel", "issue_id", iss.ID, "err", err)
 			markError(ctx, iss.ID, fmt.Sprintf("spawn failed: %v", err))
 			continue

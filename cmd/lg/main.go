@@ -80,10 +80,12 @@ delete_branch_on_merge = true
 
 const scaffoldRoutesTOML = `# Oracle reads this as hint data for routing decisions.
 # Add rules to help Oracle classify incoming lg invoke requests.
+# Optional: add model = "fast|standard|premium" to any rule to pin a model tier.
 
 [[rule]]
 pattern = "review"
 role = "inquisitor"
+# model = "premium"
 
 [[rule]]
 pattern = "plan|architect|design"
@@ -337,6 +339,68 @@ Exactly one terminal outcome per invocation:
 ISSUE_ID must be closed before you exit. No exceptions.
 `
 
+// scaffoldLegionSkill is the Legion skill file written by lg init.
+// Backticks are concatenated as string literals since Go raw strings cannot
+// contain backticks.
+var scaffoldLegionSkill = `---
+name: legion
+description: >
+  Legion task orchestration skill. Activate when: dispatching work via lg invoke,
+  checking vessel status, routing tasks to specific agents, reading open issues,
+  or monitoring active vessels. Covers: lg CLI commands, bd issue tracking,
+  routing label conventions, agent roster, and status interpretation.
+license: MIT
+metadata:
+  version: "0.1"
+---
+
+## Overview
+
+Legion is an autonomous task orchestration system. You dispatch work with ` +
+	"`lg invoke`" + `,
+Legion routes it to the right vessel, vessels execute and push branches.
+
+## Routing Table
+
+| Intent | Labels | Notes |
+|---|---|---|
+| Implement / fix / build | role:worker | Generic worker vessel |
+| Route to named agent | agent:<name> | Archon spawns --agent <name> |
+| Plan / decompose | role:planner | Vessel outputs sub-issues |
+| Classify unclear work | role:dispatcher | Fallback; prefer explicit routing |
+| Review (after branch) | role:reviewer | Do NOT create manually — vessels create review beads |
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| ` + "`" + `lg invoke "<title>" [--agent <name>] [--model <tier\|name>]` + "`" + ` | Create issue, dispatch to vessel |
+| ` + "`lg status`" + ` | List open and in-progress issues |
+| ` + "`" + `lg log <id> [--follow]` + "`" + ` | Print ACP execution traces |
+| ` + "`lg watch`" + ` | Live-refreshing status dashboard |
+| ` + "`" + `bd list --status open` + "`" + ` | Show all open beads |
+| ` + "`" + `bd show <id>` + "`" + ` | Full bead detail |
+| ` + "`bd ready`" + ` | Unblocked work ready to claim |
+
+## Team Roster
+
+| Agent | Role | Specialty |
+|---|---|---|
+| oracle | Face | Conversational intake, creates beads |
+| hermes | Router | Reads bead, emits role: label |
+| wraith | Worker | Writes code, pushes branch/PR |
+| inquisitor | Reviewer | Diffs branch, merges or creates rework bead |
+| hierophant | Planner | Vague intent → dependency graph |
+
+## Model Tiers
+
+| Tier | Model |
+|---|---|
+| fast | claude-haiku-4.5 |
+| standard | claude-sonnet-4.6 |
+| premium | claude-opus-4.6 |
+`
+
 // ── cmdInit ───────────────────────────────────────────────────────────────────
 
 // cmdInit scaffolds a Legion workspace in the current repo.
@@ -413,6 +477,14 @@ func cmdInit() {
 	writeScaffoldFile(root, filepath.Join(agentsDir, "oracle.agent.md"), scaffoldOracleAgent)
 	writeScaffoldFile(root, filepath.Join(agentsDir, "hermes.agent.md"), scaffoldHermesAgent)
 	writeScaffoldFile(root, filepath.Join(agentsDir, "inquisitor.agent.md"), scaffoldInquisitorAgent)
+
+	// ── 5. Legion skill ───────────────────────────────────────────────────────
+	skillsDir := filepath.Join(root, ".github", "skills", "legion")
+	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "lg init: mkdir .github/skills/legion: %v\n", err)
+		os.Exit(1)
+	}
+	writeScaffoldFile(root, filepath.Join(skillsDir, "SKILL.md"), scaffoldLegionSkill)
 }
 
 // writeScaffoldFile writes content to path only if the file does not already
