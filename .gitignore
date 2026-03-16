@@ -18,3 +18,9 @@
 # IDE workspace files
 legion.code-workspace
 .legion/context/
+
+# Vessel runtime files — written by pre-run.sh and vessel-driver at container runtime;
+# must never be committed to the branch by post-run.sh's git add -A.
+.legion/context.json
+.legion/issue.json
+result.json
