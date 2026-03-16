@@ -17,6 +17,7 @@ weaver = 1
 router_agent = "hermes"
 default_role = "worker"
 max_dispatch = 3
+dispatch_label = "dispatch:auto"
 
 [review]
 enabled = false

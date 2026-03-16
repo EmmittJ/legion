@@ -55,6 +55,7 @@ type ArchonRouting struct {
 	DefaultRole    string `toml:"default_role"`
 	MaxDispatch    int    `toml:"max_dispatch"`
 	DispatcherMode string `toml:"dispatcher_mode"`
+	DispatchLabel  string `toml:"dispatch_label"`
 }
 
 // ArchonReview controls automatic review-vessel creation after worker completion.
@@ -88,6 +89,7 @@ func defaultArchonConfig() ArchonConfig {
 			DefaultRole:    "worker",
 			MaxDispatch:    3,
 			DispatcherMode: "keyword",
+			DispatchLabel:  "dispatch:auto",
 		},
 		Review: ArchonReview{
 			Enabled:             true,

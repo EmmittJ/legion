@@ -276,6 +276,7 @@ func cmdInvoke() {
 
 	// Build the bd create arg list.
 	bdArgs := []string{"create", title, "--type=task", "--description=" + title}
+	bdArgs = append(bdArgs, "--labels", "dispatch:auto") // marks issue for Archon auto-dispatch
 	if agentName != "" {
 		bdArgs = append(bdArgs, "--labels", "agent:"+agentName)
 	}

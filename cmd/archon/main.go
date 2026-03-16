@@ -322,8 +322,12 @@ func run(name string, args ...string) ([]byte, error) {
 	return stdout, nil
 }
 
-func listReadyIssues() ([]issueItem, error) {
-	out, err := run("bd", "ready", "--json")
+func listReadyIssues(dispatchLabel string) ([]issueItem, error) {
+	args := []string{"ready", "--json"}
+	if dispatchLabel != "" {
+		args = append(args, "--label", dispatchLabel)
+	}
+	out, err := run("bd", args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing ready issues: %w", err)
 	}
@@ -525,7 +529,7 @@ func pulse(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *trac
 	ctx, span := o.tracer.Start(ctx, "legion.archon.pulse")
 	defer span.End()
 
-	issues, err := listReadyIssues()
+	issues, err := listReadyIssues(acfg.Routing.DispatchLabel)
 	if err != nil {
 		slog.ErrorContext(ctx, "pulse: listing ready issues", "err", err)
 		span.RecordError(err)
