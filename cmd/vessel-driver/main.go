@@ -40,6 +40,19 @@ type vesselResult struct {
 	ErrorMessage string `json:"error_message,omitempty"` // set on error
 }
 
+// hermesResult is the classification result written to /workspace/result.json when
+// running in hermes mode.  Hermes does not work on code; it classifies issues
+// and emits a routing decision.
+//
+// Status is required so the dispatch loop's readACPResult() can proceed after
+// the acp-session built-in completes.  hooks/hermes/post-run.sh reads .role
+// and .issue_id; it ignores .status, so adding it here is backwards-compatible.
+type hermesResult struct {
+	Status  string `json:"status"`   // "success" | "error"
+	IssueID string `json:"issue_id"` // needed by hermes post-run hook
+	Role    string `json:"role"`     // "worker" | "hierophant" | "inquisitor"
+}
+
 // writeResult serialises r to /workspace/result.json.  Errors are logged but
 // never fatal — we always want the process to exit with the correct code even
 // if the write fails.
@@ -55,6 +68,22 @@ func writeResult(r vesselResult) {
 	}
 	if err := os.WriteFile("/workspace/result.json", data, 0o644); err != nil {
 		slog.Error("write result.json failed", "err", err)
+	}
+}
+
+// writeHermesResult serialises h to /workspace/result.json for hermes mode.
+func writeHermesResult(h hermesResult) {
+	data, err := json.MarshalIndent(h, "", "  ")
+	if err != nil {
+		slog.Error("hermes result marshal failed", "err", err)
+		return
+	}
+	if err := os.MkdirAll("/workspace", 0o755); err != nil {
+		slog.Error("mkdir /workspace failed", "err", err)
+		return
+	}
+	if err := os.WriteFile("/workspace/result.json", data, 0o644); err != nil {
+		slog.Error("write hermes result.json failed", "err", err)
 	}
 }
 
@@ -132,6 +161,10 @@ type vesselClient struct {
 	workspace string
 	mu        sync.Mutex
 	terminals map[string]*terminalSession
+
+	// For hermes mode: capture all agent message chunks to extract JSON decision
+	captureOutput bool
+	output        strings.Builder
 }
 
 // SessionUpdate is called for every streaming update Copilot sends while
@@ -142,6 +175,12 @@ func (c *vesselClient) SessionUpdate(ctx context.Context, params *acp.SessionNot
 		AgentMessageChunk: func(v acp.SessionUpdateAgentMessageChunk) struct{} {
 			if text, ok := v.Content.AsText(); ok && text.Text != "" {
 				slog.DebugContext(ctx, "copilot output", "text", text.Text)
+				// For hermes mode, capture all output
+				if c.captureOutput {
+					c.mu.Lock()
+					c.output.WriteString(text.Text)
+					c.mu.Unlock()
+				}
 			}
 			return struct{}{}
 		},
@@ -379,101 +418,36 @@ func resolveACPCommand(spec config.ACPSpec, modelOverride string) ([]string, err
 	}
 }
 
-func main() {
-	// Load structured config from LEGION_CONFIG_JSON (or LEGION_CONFIG_FILE for tests).
-	// Secrets (GITHUB_TOKEN, DOLT_HOST/PORT, OTEL_*) remain as individual env vars
-	// consumed by the pre/post-run hooks — vessel-driver does not read them directly.
-	vc, err := config.Load()
-	if err != nil {
-		slog.Error("config load failed", "err", err)
-		// writeResult is defined above main() so it is safe to call here even
-		// though telemetry and die() are not yet initialised.  issueID is unknown
-		// at this point so we leave it empty — post-run.sh checks status only.
-		writeResult(vesselResult{Status: "error", ErrorMessage: "config load: " + err.Error()})
-		os.Exit(1)
-	}
+// runWorkerACPSession runs the ACP session for worker / reviewer / hierophant /
+// inquisitor roles.  On success it writes /workspace/result.json with
+// STATUS=success.  On failure it returns an error; the dispatch loop's
+// fatalFail handler then writes result.json with STATUS=error.
+//
+// The tracer is used only to create child spans; the root span lives in main().
+func runWorkerACPSession(ctx context.Context, vc *config.VesselConfig, legionModel string, tracer trace.Tracer) error {
 	issueID := vc.IssueID
-	branch := "vessel/" + issueID            // must match the branch created by pre-run.sh
-	legionModel := os.Getenv("LEGION_MODEL") // overrides acp_spec.model at runtime if set
+	branch := vesselBranch(vc) // dispatch.go resolves the correct branch per role
 
-	ctx := context.Background()
-
-	// If Archon injected a W3C traceparent env var (lg-4zv), extract the parent
-	// span context now — before telemetry.Setup and before the root span starts —
-	// so that tracer.Start below creates a child of Archon's spawn span, linking
-	// the vessel trace to the dispatch trace in Tempo.
-	if tp := os.Getenv("TRACEPARENT"); tp != "" {
-		carrier := propagation.MapCarrier{"traceparent": tp}
-		ctx = propagation.TraceContext{}.Extract(ctx, carrier)
-	}
-
-	// Initialize telemetry. Non-fatal: a noop tracer/meter is returned on
-	// failure so the rest of the binary continues without distributed tracing.
-	tracer, _, _, shutdown, err := telemetry.Setup(ctx, "legion.vessel-driver")
-	if err != nil {
-		slog.Error("telemetry setup failed", "err", err)
-		// non-fatal — continue
-	}
-
-	// Log after telemetry.Setup so the JSON handler is active and Loki's
-	// parser sees a consistent format for every log line.
-	if tp := os.Getenv("TRACEPARENT"); tp != "" {
-		slog.InfoContext(ctx, "extracted parent trace context", "traceparent", tp)
-	}
-	// IMPORTANT: vessel-driver is short-lived. This defer is the only
-	// mechanism that flushes buffered spans to Jaeger before exit.
-	// os.Exit bypasses defers, so die() calls shutdown explicitly on every
-	// fatal error path.
-	defer func() { _ = shutdown(ctx) }()
-
-	// Root span covering the entire ACP session lifecycle.
-	ctx, rootSpan := tracer.Start(ctx, "legion.vessel.run",
-		trace.WithAttributes(
-			attribute.String("issue.id", issueID),
-			attribute.String("repo.url", vc.RepoURL),
-		),
-	)
-	defer rootSpan.End()
-
-	// die records the error on the root span, writes result.json, flushes
-	// telemetry, and exits 1.  Must be used instead of os.Exit on every fatal
-	// path reached after telemetry is initialised.
-	die := func(msg string, fatalErr error) {
-		rootSpan.RecordError(fatalErr)
-		rootSpan.SetStatus(codes.Error, msg)
-		rootSpan.End()
-		slog.ErrorContext(ctx, msg, "err", fatalErr)
-		writeResult(vesselResult{
-			IssueID:      issueID,
-			Status:       "error",
-			ErrorMessage: fatalErr.Error(),
-		})
-		_ = shutdown(ctx)
-		os.Exit(1)
-	}
-
-	// Read the issue context written by the pre-run hook so we can build the prompt.
 	issue, err := readIssueContext(issueID)
 	if err != nil {
-		die("read issue context failed", err)
+		return fmt.Errorf("read issue context: %w", err)
 	}
 
-	// Agent identity check: if agent_name is set the agent file must exist
+	// Agent identity pre-flight: if agent_name is set the agent file must exist
 	// inside the cloned repo before we spend time starting Copilot.
 	if vc.AgentName != "" {
 		agentFile := "/workspace/.github/agents/" + vc.AgentName + ".agent.md"
 		if _, statErr := os.Stat(agentFile); statErr != nil {
-			die("agent file check failed", statErr)
+			return fmt.Errorf("agent file check: %w", statErr)
 		}
 	}
 
-	// ── ACP session ─────────────────────────────────────────────────────────
+	// ── ACP initialize ────────────────────────────────────────────────────────
 	// IMPORTANT: copilot --acp --stdio authenticates via GH_TOKEN.
 	// The token MUST have the "copilot" OAuth scope.  A plain repo-scoped PAT
 	// or Actions GITHUB_TOKEN will cause session/prompt to hang until the
 	// VESSEL_TIMEOUT deadline fires.  Use a token from a Copilot-enabled
 	// GitHub account with the copilot scope.
-
 	_, acpInitSpan := tracer.Start(ctx, "legion.vessel.acp.initialize",
 		trace.WithAttributes(attribute.String("model", vc.ACPSpec.Model)),
 	)
@@ -481,7 +455,7 @@ func main() {
 	acpArgs, err := resolveACPCommand(vc.ACPSpec, legionModel)
 	if err != nil {
 		acpInitSpan.End()
-		die("resolve ACP command", err)
+		return fmt.Errorf("resolve ACP command: %w", err)
 	}
 	slog.InfoContext(ctx, "starting ACP session", "model", vc.ACPSpec.Model, "acp_args", acpArgs)
 
@@ -491,25 +465,19 @@ func main() {
 	acpCmd := exec.CommandContext(ctx, acpArgs[0], acpArgs[1:]...)
 	acpStdin, err := acpCmd.StdinPipe()
 	if err != nil {
-		acpInitSpan.RecordError(err)
-		acpInitSpan.SetStatus(codes.Error, err.Error())
 		acpInitSpan.End()
-		die("acpCmd.StdinPipe failed", err)
+		return fmt.Errorf("StdinPipe: %w", err)
 	}
 	acpStdout, err := acpCmd.StdoutPipe()
 	if err != nil {
-		acpInitSpan.RecordError(err)
-		acpInitSpan.SetStatus(codes.Error, err.Error())
 		acpInitSpan.End()
-		die("acpCmd.StdoutPipe failed", err)
+		return fmt.Errorf("StdoutPipe: %w", err)
 	}
 	acpCmd.Stderr = os.Stderr // copilot auth/debug output → container stderr
 
 	if err := acpCmd.Start(); err != nil {
-		acpInitSpan.RecordError(err)
-		acpInitSpan.SetStatus(codes.Error, err.Error())
 		acpInitSpan.End()
-		die("acpCmd.Start failed", err)
+		return fmt.Errorf("acpCmd.Start: %w", err)
 	}
 
 	client := &vesselClient{
@@ -551,11 +519,12 @@ func main() {
 		acpInitSpan.RecordError(err)
 		acpInitSpan.SetStatus(codes.Error, err.Error())
 		acpInitSpan.End()
-		die("conn.Initialize failed", err)
+		return fmt.Errorf("Initialize: %w", err)
 	}
 	acpInitSpan.End()
 	slog.InfoContext(ctx, "ACP handshake OK", "protocol_version", int(initResult.ProtocolVersion))
 
+	// ── ACP session ───────────────────────────────────────────────────────────
 	// New session — inject the Beads MCP server so Copilot can read and update
 	// issues directly during its work.
 	_, acpSessionSpan := tracer.Start(ctx, "legion.vessel.acp.session")
@@ -569,7 +538,7 @@ func main() {
 		acpSessionSpan.RecordError(err)
 		acpSessionSpan.SetStatus(codes.Error, err.Error())
 		acpSessionSpan.End()
-		die("conn.NewSession failed", err)
+		return fmt.Errorf("NewSession: %w", err)
 	}
 	sessionID := sessionResult.SessionID
 	acpSessionSpan.End()
@@ -595,7 +564,7 @@ func main() {
 	promptCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSecs)*time.Second)
 	defer cancel()
 
-	// SessionUpdate notifications are delivered to vc.SessionUpdate()
+	// SessionUpdate notifications are delivered to client.SessionUpdate()
 	// automatically by the SDK while conn.Prompt is blocking.
 	promptResult, err := conn.Prompt(promptCtx, &acp.PromptRequest{
 		SessionID: sessionID,
@@ -604,7 +573,7 @@ func main() {
 		},
 	})
 
-	// Unify the stop reason string for the rest of the main() logic.
+	// Unify the stop reason string for the rest of the logic.
 	var stopReason string
 	if promptResult != nil {
 		stopReason = string(promptResult.StopReason)
@@ -623,7 +592,7 @@ func main() {
 		acpPromptSpan.RecordError(promptErr)
 		acpPromptSpan.SetStatus(codes.Error, promptErr.Error())
 		acpPromptSpan.End()
-		die("prompt failed", promptErr)
+		return fmt.Errorf("prompt: %w", promptErr)
 	}
 	acpPromptSpan.SetStatus(codes.Ok, "")
 	acpPromptSpan.End()
@@ -636,13 +605,290 @@ func main() {
 		Branch:  branch,
 	})
 
-	// Mark root span successful before deferred End() fires.
-	rootSpan.SetStatus(codes.Ok, "")
-	rootSpan.SetAttributes(
-		attribute.String("git.branch", branch),
-		attribute.String("stop_reason", stopReason),
+	slog.InfoContext(ctx, "worker ACP session complete",
+		"issue_id", issueID, "branch", branch, "stop_reason", stopReason)
+	return nil
+}
+
+// runHermesACPSession runs the ACP session for the hermes (routing/classification)
+// role.  On success it writes /workspace/result.json with STATUS=success and the
+// routing decision in the "role" field.  On failure it returns an error.
+func runHermesACPSession(ctx context.Context, vc *config.VesselConfig, legionModel string, tracer trace.Tracer) error {
+	issueID := vc.IssueID
+
+	// Read the issue context written by the hermes pre-run hook.
+	issue, err := readIssueContext(issueID)
+	if err != nil {
+		return fmt.Errorf("read issue context: %w", err)
+	}
+
+	// ── ACP initialize ────────────────────────────────────────────────────────
+	_, acpInitSpan := tracer.Start(ctx, "legion.vessel.acp.initialize",
+		trace.WithAttributes(attribute.String("model", vc.ACPSpec.Model)),
 	)
 
-	slog.InfoContext(ctx, "vessel complete", "issue_id", issueID, "branch", branch)
-	// rootSpan.End() and shutdown(ctx) called by defer — spans flushed to Jaeger.
+	acpArgs, err := resolveACPCommand(vc.ACPSpec, legionModel)
+	if err != nil {
+		acpInitSpan.End()
+		return fmt.Errorf("resolve ACP command: %w", err)
+	}
+	slog.InfoContext(ctx, "starting hermes ACP session", "model", vc.ACPSpec.Model, "acp_args", acpArgs)
+
+	acpCmd := exec.CommandContext(ctx, acpArgs[0], acpArgs[1:]...)
+	acpStdin, err := acpCmd.StdinPipe()
+	if err != nil {
+		acpInitSpan.End()
+		return fmt.Errorf("StdinPipe: %w", err)
+	}
+	acpStdout, err := acpCmd.StdoutPipe()
+	if err != nil {
+		acpInitSpan.End()
+		return fmt.Errorf("StdoutPipe: %w", err)
+	}
+	acpCmd.Stderr = os.Stderr
+
+	if err := acpCmd.Start(); err != nil {
+		acpInitSpan.End()
+		return fmt.Errorf("acpCmd.Start: %w", err)
+	}
+
+	client := &vesselClient{
+		workspace:     "/workspace",
+		terminals:     make(map[string]*terminalSession),
+		captureOutput: true, // hermes captures output to extract the role decision
+	}
+	conn := acp.NewClientSideConnection(client, acpStdin, acpStdout)
+	defer conn.Close()
+
+	go func() {
+		_ = acpCmd.Wait()
+		conn.Close()
+	}()
+
+	go func() {
+		if err := conn.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.ErrorContext(ctx, "acp connection error", "err", err)
+		}
+	}()
+	runtime.Gosched()
+
+	// Initialize ACP handshake.
+	initResult, err := conn.Initialize(ctx, &acp.InitializeRequest{
+		ProtocolVersion: acp.ProtocolVersion(acp.CurrentProtocolVersion),
+		ClientCapabilities: &acp.ClientCapabilities{
+			FS: &acp.FileSystemCapabilities{
+				ReadTextFile:  true,
+				WriteTextFile: true,
+			},
+			Terminal: true,
+		},
+	})
+	if err != nil {
+		acpInitSpan.RecordError(err)
+		acpInitSpan.SetStatus(codes.Error, err.Error())
+		acpInitSpan.End()
+		return fmt.Errorf("Initialize: %w", err)
+	}
+	acpInitSpan.End()
+	slog.InfoContext(ctx, "hermes ACP handshake OK", "protocol_version", int(initResult.ProtocolVersion))
+
+	// ── ACP session ───────────────────────────────────────────────────────────
+	_, acpSessionSpan := tracer.Start(ctx, "legion.vessel.acp.session")
+	sessionResult, err := conn.NewSession(ctx, &acp.NewSessionRequest{
+		Cwd: "/workspace",
+		MCPServers: []acp.MCPServer{
+			acp.NewMCPServerStdio("beads", "bd", []string{"mcp"}, []acp.EnvVariable{}),
+		},
+	})
+	if err != nil {
+		acpSessionSpan.RecordError(err)
+		acpSessionSpan.SetStatus(codes.Error, err.Error())
+		acpSessionSpan.End()
+		return fmt.Errorf("NewSession: %w", err)
+	}
+	sessionID := sessionResult.SessionID
+	acpSessionSpan.End()
+	slog.InfoContext(ctx, "hermes ACP session ready", "session_id", string(sessionID))
+
+	// Build prompt from issue context.
+	promptContent := issue.Title
+	if issue.Description != "" {
+		promptContent += "\n\n" + issue.Description
+	}
+
+	_, acpPromptSpan := tracer.Start(ctx, "legion.vessel.acp.prompt",
+		trace.WithAttributes(attribute.String("model", vc.ACPSpec.Model)),
+	)
+
+	// Hermes classifies quickly; default timeout is shorter than worker.
+	timeoutSecs := 60
+	if v := os.Getenv("VESSEL_TIMEOUT"); v != "" {
+		if n, parseErr := strconv.Atoi(v); parseErr == nil {
+			timeoutSecs = n
+		}
+	}
+	promptCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSecs)*time.Second)
+	defer cancel()
+
+	promptResult, err := conn.Prompt(promptCtx, &acp.PromptRequest{
+		SessionID: sessionID,
+		Prompt: []acp.ContentBlock{
+			acp.NewContentBlockText(promptContent),
+		},
+	})
+
+	var stopReason string
+	if promptResult != nil {
+		stopReason = string(promptResult.StopReason)
+	}
+
+	if err != nil || stopReason != "end_turn" {
+		var promptErr error
+		if err != nil {
+			promptErr = err
+			slog.ErrorContext(ctx, "hermes prompt error", "err", err)
+		} else {
+			promptErr = fmt.Errorf("stop reason: %s", stopReason)
+			slog.ErrorContext(ctx, "hermes prompt stopped with error reason", "stop_reason", stopReason)
+		}
+		acpPromptSpan.RecordError(promptErr)
+		acpPromptSpan.SetStatus(codes.Error, promptErr.Error())
+		acpPromptSpan.End()
+		return fmt.Errorf("hermes prompt: %w", promptErr)
+	}
+	acpPromptSpan.SetStatus(codes.Ok, "")
+	acpPromptSpan.End()
+	slog.InfoContext(ctx, "hermes prompt complete", "stop_reason", stopReason)
+
+	// ── Extract role decision ─────────────────────────────────────────────────
+	// Hermes outputs JSON; parse it to extract the role field.
+	// May contain surrounding text, so we scan for the first { … } object.
+	client.mu.Lock()
+	output := client.output.String()
+	client.mu.Unlock()
+
+	slog.InfoContext(ctx, "hermes output captured", "output", output)
+
+	role := "worker" // safe fallback
+	var hermesOutput map[string]interface{}
+	if err := json.Unmarshal([]byte(output), &hermesOutput); err == nil {
+		if r, ok := hermesOutput["role"]; ok {
+			if roleStr, ok := r.(string); ok {
+				role = roleStr
+			}
+		}
+	} else {
+		// Try to find JSON in the output by searching for { ... }.
+		start := strings.Index(output, "{")
+		if start >= 0 {
+			end := strings.LastIndex(output, "}")
+			if end > start {
+				jsonStr := output[start : end+1]
+				if err := json.Unmarshal([]byte(jsonStr), &hermesOutput); err == nil {
+					if r, ok := hermesOutput["role"]; ok {
+						if roleStr, ok := r.(string); ok {
+							role = roleStr
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Validate the role — unknown roles default to "worker" to prevent dispatch errors.
+	switch role {
+	case "worker", "hierophant", "inquisitor":
+		// valid
+	default:
+		slog.WarnContext(ctx, "hermes: unknown role, defaulting to worker", "role", role)
+		role = "worker"
+	}
+
+	// Write the hermes result.  Status="success" is required so the dispatch
+	// loop's readACPResult() can proceed; .role is read by hooks/hermes/post-run.sh.
+	writeHermesResult(hermesResult{
+		Status:  "success",
+		IssueID: issueID,
+		Role:    role,
+	})
+
+	slog.InfoContext(ctx, "hermes complete", "issue_id", issueID, "role", role)
+	return nil
+}
+
+func main() {
+	// Load structured config from LEGION_CONFIG_JSON (or LEGION_CONFIG_FILE for tests).
+	// Secrets (GITHUB_TOKEN, DOLT_HOST/PORT, OTEL_*) remain as individual env vars
+	// consumed by hooks — vessel-driver does not read them directly.
+	vc, err := config.Load()
+	if err != nil {
+		slog.Error("config load failed", "err", err)
+		// writeResult is safe to call here even though telemetry is not yet
+		// initialised.  issueID is unknown at this point so we leave it empty.
+		writeResult(vesselResult{Status: "error", ErrorMessage: "config load: " + err.Error()})
+		os.Exit(1)
+	}
+
+	issueID := vc.IssueID
+	legionModel := os.Getenv("LEGION_MODEL") // overrides acp_spec.model at runtime if set
+
+	ctx := context.Background()
+
+	// If Archon injected a W3C traceparent env var, extract the parent span
+	// context before telemetry.Setup so tracer.Start creates a child span that
+	// links the vessel trace to Archon's dispatch trace in Tempo.
+	if tp := os.Getenv("TRACEPARENT"); tp != "" {
+		carrier := propagation.MapCarrier{"traceparent": tp}
+		ctx = propagation.TraceContext{}.Extract(ctx, carrier)
+	}
+
+	// Initialize telemetry. Non-fatal: a noop tracer/meter is returned on
+	// failure so the rest of the binary continues without distributed tracing.
+	tracer, _, _, shutdown, err := telemetry.Setup(ctx, "legion.vessel-driver")
+	if err != nil {
+		slog.Error("telemetry setup failed", "err", err)
+		// non-fatal — continue with noop tracer
+	}
+
+	// Log after telemetry.Setup so the JSON handler is active.
+	if tp := os.Getenv("TRACEPARENT"); tp != "" {
+		slog.InfoContext(ctx, "extracted parent trace context", "traceparent", tp)
+	}
+
+	// Root span covering the entire vessel lifecycle.
+	ctx, rootSpan := tracer.Start(ctx, "legion.vessel.run",
+		trace.WithAttributes(
+			attribute.String("issue.id", issueID),
+			attribute.String("repo.url", vc.RepoURL),
+		),
+	)
+
+	// Build the acp-session built-in closure for this role.
+	// The closure captures tracer and legionModel so the ACP functions have
+	// access to them without threading them through the dispatch loop.
+	var acpBuiltIn func(context.Context) error
+	if vc.RoleName == "hermes" {
+		acpBuiltIn = func(runCtx context.Context) error {
+			return runHermesACPSession(runCtx, vc, legionModel, tracer)
+		}
+	} else {
+		acpBuiltIn = func(runCtx context.Context) error {
+			return runWorkerACPSession(runCtx, vc, legionModel, tracer)
+		}
+	}
+
+	exitCode := RunDispatch(ctx, vc, acpBuiltIn)
+
+	// Set root span status and end it before telemetry flush.
+	if exitCode == 0 {
+		rootSpan.SetStatus(codes.Ok, "")
+	} else {
+		rootSpan.SetStatus(codes.Error, "dispatch failed")
+	}
+	rootSpan.End()
+
+	// IMPORTANT: vessel-driver is short-lived.  This shutdown call is the only
+	// mechanism that flushes buffered spans before the process exits.
+	_ = shutdown(ctx)
+	os.Exit(exitCode)
 }
