@@ -8,6 +8,21 @@ datasources:
     url: http://prometheus:9090
     isDefault: false
 
+  # Loki must come before Tempo so that Tempo's datasourceUid: loki reference
+  # resolves at provisioning time. Grafana 11 validates UID cross-references
+  # sequentially — if the referenced datasource hasn't been provisioned yet
+  # when the current entry is processed, provisioning fails with
+  # "data source not found".
+  - name: Loki
+    type: loki
+    uid: loki
+    access: proxy
+    url: http://loki:3100
+    # Note: derivedFields with datasourceUid: tempo would create a circular
+    # dependency (Loki→Tempo, Tempo→Loki) and cannot be resolved without a
+    # two-pass provisioner.  The Loki→Tempo back-link is left for manual
+    # configuration in the Grafana UI if needed.
+
   - name: Tempo
     type: tempo
     uid: tempo
@@ -23,15 +38,3 @@ datasources:
         filterBySpanID: false
       lokiSearch:
         datasourceUid: loki
-
-  - name: Loki
-    type: loki
-    access: proxy
-    url: http://loki:3100
-    uid: loki
-    jsonData:
-      derivedFields:
-        - datasourceUid: tempo
-          matcherRegex: '"trace_id"\s*:\s*"(\w+)"'
-          name: TraceID
-          url: '${__value.raw}'
