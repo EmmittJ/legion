@@ -82,11 +82,11 @@ RUN set -eux; \
 COPY --from=builder /vessel-driver /vessel-driver
 RUN chmod +x /vessel-driver
 
-# Hooks + entrypoint — pre-run (clone/claim) and post-run (push/close) scripts.
-COPY cmd/vessel-driver/hooks/pre-run.sh  /hooks/pre-run.sh
-COPY cmd/vessel-driver/hooks/post-run.sh /hooks/post-run.sh
-COPY cmd/vessel-driver/entrypoint.sh     /entrypoint.sh
-RUN chmod +x /hooks/pre-run.sh /hooks/post-run.sh /entrypoint.sh
+# Hook utility library + entrypoint shim.
+# vessel-driver owns full lifecycle dispatch; lib.sh is a utility for hook script authors.
+COPY cmd/vessel-driver/hooks/lib.sh  /hooks/lib.sh
+COPY cmd/vessel-driver/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 WORKDIR /workspace
 

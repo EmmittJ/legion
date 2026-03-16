@@ -1,37 +1,22 @@
 #!/usr/bin/env bash
-# entrypoint.sh — top-level vessel pipeline orchestrator.
+# entrypoint.sh — thin env shim; execs vessel-driver.
 #
-# Runs three stages in order:
-#   1. /hooks/pre-run.sh   — clone repo, checkout branch, claim issue, write context
-#   2. /vessel-driver      — pure ACP adapter; reads config, runs session, writes result.json
-#   3. /hooks/post-run.sh  — commit/push on success; mark failed on error
-#
-# post-run.sh MUST always execute so the issue is marked correctly regardless of
-# whether vessel-driver succeeded or failed.  vessel-driver writes result.json with
-# status="error" on any die() path, so post-run.sh reads that and marks the issue
-# blocked.  We use `|| true` to prevent set -e from aborting after a non-zero exit.
-#
-# Env wiring: BEADS_DOLT_SERVER_* are exported here so that every child process
-# (pre-run.sh, vessel-driver, post-run.sh) inherits them without each hook having
-# to redeclare them.  BEADS_DOLT_SERVER_USER is set per-hook since it does not
-# need to be part of the top-level env.
+# Responsibility: wire Archon-injected env vars and exec the vessel-driver binary.
+# vessel-driver owns the full lifecycle (hook dispatch, ACP session, result writing).
+# Do NOT add pre-run, post-run, or run_hooks logic here.
 
 set -euo pipefail
 
-# Wire DOLT_HOST/PORT → BEADS_DOLT_SERVER_* for all bd calls in the pipeline.
-# bd v0.60.0+ honours these env vars at startup, overriding config.yaml defaults.
+# Wire DOLT_HOST/PORT → BEADS_DOLT_SERVER_* so vessel-driver and any hook scripts
+# it invokes can reach the Dolt server without re-parsing LEGION_CONFIG_JSON.
 export BEADS_DOLT_SERVER_HOST="${DOLT_HOST:-dolt}"
 export BEADS_DOLT_SERVER_PORT="${DOLT_PORT:-3306}"
 
-# Copilot CLI authenticates via GH_TOKEN.  Archon passes GITHUB_TOKEN — alias it
-# here so vessel-driver, pre-run.sh, and post-run.sh all see the same credential
-# under the name the Copilot CLI expects.
+# Copilot CLI expects GH_TOKEN; Archon injects GITHUB_TOKEN — alias it here.
 export GH_TOKEN="${GITHUB_TOKEN}"
 
-# Extract vessel role from LEGION_CONFIG_JSON so post-run.sh can branch on it.
-# Defaults to "worker" if the field is absent (backwards-compatible).
+# Derive LEGION_ROLE from LEGION_CONFIG_JSON for hooks that need it.
+# Defaults to "worker" when role_name is absent (backwards-compatible).
 export LEGION_ROLE=$(echo "$LEGION_CONFIG_JSON" | jq -r '.role_name // "worker"')
 
-/hooks/pre-run.sh
-/vessel-driver || true   # always continues; result.json carries status="error" on failure
-/hooks/post-run.sh       # always runs; exits 1 on error path, 0 on success
+exec /vessel-driver

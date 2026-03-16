@@ -8,7 +8,7 @@
 #  - BEADS_DOLT_SERVER_HOST, BEADS_DOLT_SERVER_PORT, BEADS_DOLT_SERVER_USER
 #    are injected by Archon and override the stub config.
 #  - Archon mounts or injects the issue context (ISSUE_TITLE, etc.) as env vars.
-#  - The vessel pipeline (entrypoint.sh → pre-run.sh → vessel-driver → post-run.sh)
+#  - The vessel pipeline (entrypoint.sh → vessel-driver); vessel-driver owns full lifecycle dispatch.
 #    reads these and applies the routing rules in hermes.agent.md.
 
 FROM legion/vessel-copilot:latest
