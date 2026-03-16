@@ -270,11 +270,28 @@ func resolveModel(cfg archoncfg.ArchonConfig, labels []string) string {
 }
 
 // inferRole returns the role for an issue: explicit role label > default role from config.
+// Agent-identity labels (e.g. "inquisitor") are mapped to their canonical functional
+// role names so that VesselConfig.RoleName always carries the function, not the persona.
 func inferRole(iss issueItem, defaultRole string) string {
 	if r := roleLabel(iss.Labels); r != "" {
-		return r
+		return canonicalRole(r)
 	}
 	return defaultRole
+}
+
+// canonicalRole maps agent-identity role labels to their functional role names.
+// This is the single authoritative mapping for Option A of the naming decision:
+//
+//	"inquisitor" → "reviewer"   (agent identity → functional role)
+//
+// All other labels are returned unchanged.
+func canonicalRole(label string) string {
+	switch label {
+	case "inquisitor":
+		return "reviewer"
+	default:
+		return label
+	}
 }
 
 type containerState struct {
@@ -406,6 +423,7 @@ func createReviewBead(ctx context.Context, issueID, issueTitle string) {
 		"Review: "+issueTitle,
 		"--description=Review output of vessel "+issueID+". Branch: vessel/"+issueID+".",
 		"--add-label", "role:inquisitor",
+		"--add-label", "agent:inquisitor",
 		"--add-label", "discovered-from:"+issueID,
 		"-t", "task",
 		"-p", "1",
