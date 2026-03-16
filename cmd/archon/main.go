@@ -315,6 +315,74 @@ func loadConfig() config {
 	}
 }
 
+// isExecutable checks if a file exists and is executable.
+// Uses os.Stat + mode bits only; returns false for directories.
+func isExecutable(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	if info.IsDir() {
+		return false
+	}
+	// Check execute bit for owner, group, or other.
+	return (info.Mode() & 0o111) != 0
+}
+
+// archonHookEnv constructs the explicit environment variable list for hook execution.
+// Returns ~9 LEGION_* and BEADS_DOLT_* variables (no os.Environ() passthrough).
+func archonHookEnv(cfg archoncfg.ArchonConfig, runtime config) []string {
+	return []string{
+		"PATH=" + os.Getenv("PATH"),
+		"LEGION_REPO_URL=" + runtime.repoURL,
+		"LEGION_VESSEL_IMAGE=" + runtime.vesselImage,
+		"LEGION_VESSEL_MODEL=" + runtime.vesselModel,
+		"LEGION_DOCKER_NETWORK=" + runtime.dockerNetwork,
+		"BEADS_DOLT_HOST=" + runtime.doltHost,
+		"BEADS_DOLT_PORT=" + runtime.doltPort,
+		"LEGION_PULSE_INTERVAL=" + fmt.Sprintf("%d", cfg.Daemon.PulseIntervalSeconds),
+		"LEGION_WATCHER_INTERVAL=" + fmt.Sprintf("%d", cfg.Daemon.WatcherIntervalSeconds),
+	}
+}
+
+// runArchonHook invokes a lifecycle hook script if it exists and is executable.
+// Two-tier search: ImageHookDir (production) then RepoHookDir (dev).
+// Returns nil if hook not found; wrapped error on failure.
+func runArchonHook(ctx context.Context, event string, cfg archoncfg.ArchonConfig, runtime config) error {
+	candidates := []string{
+		fmt.Sprintf("%s/%s.sh", cfg.Hooks.ImageHookDir, event),
+		fmt.Sprintf("%s/%s.sh", cfg.Hooks.RepoHookDir, event),
+	}
+
+	var hookPath string
+	for _, candidate := range candidates {
+		if isExecutable(candidate) {
+			hookPath = candidate
+			break
+		}
+	}
+
+	if hookPath == "" {
+		// Hook not found — not an error, just skip.
+		return nil
+	}
+
+	cmd := exec.CommandContext(ctx, hookPath)
+	cmd.Env = archonHookEnv(cfg, runtime)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		errMsg := strings.TrimSpace(stderr.String())
+		if errMsg == "" {
+			errMsg = err.Error()
+		}
+		return fmt.Errorf("hook %s failed: %s", event, errMsg)
+	}
+
+	return nil
+}
+
 // containerName returns a deterministic Docker container name for the given issue ID.
 // Non-alphanumeric characters (other than hyphens) are replaced with hyphens.
 func containerName(issueID string) string {
@@ -565,6 +633,13 @@ func pulse(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *trac
 		logger = logger.With("trace_id", sc.TraceID().String())
 	}
 
+	// Invoke pre-pulse hook if enabled (gated by flag, zero stat calls when disabled).
+	if acfg.Hooks.PrePulseEnabled {
+		if err := runArchonHook(ctx, "pre-pulse", acfg, cfg); err != nil {
+			logger.WarnContext(ctx, "pre-pulse hook failed (continuing)", "err", err)
+		}
+	}
+
 	issues, err := listReadyIssues(acfg.Routing.DispatchLabel)
 	if err != nil {
 		logger.ErrorContext(ctx, "pulse: listing ready issues", "err", err)
@@ -784,6 +859,22 @@ func main() {
 		"vessel_timeout", acfg.Daemon.VesselTimeout(),
 		"max_global", acfg.Limits.MaxGlobal,
 	)
+
+	// Invoke pre-start hook. Failure is fatal — Archon does not continue.
+	if err := runArchonHook(ctx, "pre-start", acfg, cfg); err != nil {
+		slog.Error("pre-start hook failed", "err", err)
+		os.Exit(1)
+	}
+
+	// Deferred post-stop cleanup: runs with context.Background() + 30s timeout
+	// (NOT the signal context, which is already cancelled at this point).
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		if err := runArchonHook(cleanupCtx, "post-stop", acfg, cfg); err != nil {
+			slog.Warn("post-stop hook failed (continuing exit)", "err", err)
+		}
+	}()
 
 	// Recover any vessel containers that outlived a previous Archon process so the
 	// watcher loop can time them out or clean them up without re-spawning.
