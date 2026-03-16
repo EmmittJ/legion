@@ -85,6 +85,11 @@ RUN chmod +x /vessel-driver
 # Hook utility library + entrypoint shim.
 # vessel-driver owns full lifecycle dispatch; lib.sh is a utility for hook script authors.
 COPY cmd/vessel-driver/hooks/lib.sh  /hooks/lib.sh
+COPY cmd/vessel-driver/hooks/common/   /hooks/common/
+COPY cmd/vessel-driver/hooks/worker/   /hooks/worker/
+COPY cmd/vessel-driver/hooks/planner/  /hooks/planner/
+COPY cmd/vessel-driver/hooks/reviewer/ /hooks/reviewer/
+RUN chmod +x /hooks/worker/*.sh /hooks/planner/*.sh /hooks/reviewer/*.sh
 COPY cmd/vessel-driver/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
