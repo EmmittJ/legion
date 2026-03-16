@@ -46,10 +46,9 @@ git config user.name "Vessel"
 export BEADS_DIR="/workspace/.beads"
 export BEADS_DOLT_SERVER_USER="root"
 
-# bd init creates .beads/dolt/ (local Dolt workspace).  The "no common ancestor"
-# dolt-pull warning is printed to stderr but does not cause bd init to exit non-zero;
-# set -e will catch genuine failures.
-bd init
+# BEADS_DOLT_SERVER_* vars (set by entrypoint.sh) point to the cluster's Dolt
+# server — no local Dolt workspace needed. BEADS_DIR + server vars are sufficient.
+echo "pre-run: beads dir=${BEADS_DIR}, dolt server=${BEADS_DOLT_SERVER_HOST}:${BEADS_DOLT_SERVER_PORT}"
 
 # ── 5. Claim the issue ────────────────────────────────────────────────────────
 bd update "$ISSUE_ID" --claim \
