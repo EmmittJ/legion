@@ -2,7 +2,7 @@
   "__inputs": [],
   "__requires": [],
   "annotations": { "list": [] },
-  "description": "Legion vessel lifecycle — container logs, ACP trace timing, Archon health, errors",
+  "description": "Legion vessel lifecycle — active vessels, start/stop events, run duration, issue state transitions, errors, ACP traces",
   "editable": true,
   "graphTooltip": 1,
   "id": null,
@@ -15,7 +15,7 @@
   "timezone": "browser",
   "title": "Legion — Vessel Lifecycle",
   "uid": "legion-vessels",
-  "version": 1,
+  "version": 2,
   "panels": [
 
     {
@@ -28,136 +28,40 @@
 
     {
       "datasource": { "type": "loki", "uid": "loki" },
-      "fieldConfig": { "defaults": {}, "overrides": [] },
-      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 1 },
-      "id": 2,
-      "options": {
-        "dedupStrategy": "none",
-        "enableLogDetails": true,
-        "prettifyLogMessage": true,
-        "showCommonLabels": false,
-        "showLabels": true,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": false
-      },
-      "targets": [
-        {
-          "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "{container_name=~\"legion-vessel-.*\"}",
-          "hide": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Vessel Logs  (legion-vessel-*)",
-      "type": "logs"
-    },
-
-    {
-      "datasource": { "type": "loki", "uid": "loki" },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
           "custom": {
-            "drawStyle": "line",
-            "fillOpacity": 10,
+            "drawStyle": "bars",
+            "fillOpacity": 60,
             "lineWidth": 1,
             "pointSize": 5,
-            "showPoints": "auto",
+            "showPoints": "never",
             "spanNulls": false,
             "stacking": { "group": "A", "mode": "none" }
           },
-          "unit": "short"
+          "unit": "short",
+          "displayName": "Active Vessels"
         },
         "overrides": []
       },
-      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 10 },
-      "id": 3,
+      "gridPos": { "h": 5, "w": 8, "x": 0, "y": 1 },
+      "id": 16,
       "options": {
-        "legend": { "calcs": [], "displayMode": "list", "placement": "right", "showLegend": true },
-        "tooltip": { "mode": "multi", "sort": "none" }
+        "legend": { "calcs": ["last"], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "single", "sort": "none" }
       },
       "targets": [
         {
           "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "sum by (container_name) (rate({container_name=~\"legion-.*\"}[1m]))",
+          "expr": "count(sum by (container_name) (count_over_time({container_name=~\"legion-vessel-.*\"}[2m])))",
           "hide": false,
-          "legendFormat": "{{container_name}}",
+          "legendFormat": "active vessels",
           "refId": "A"
         }
       ],
-      "title": "Log Activity — Lines/sec by Container",
+      "title": "Active Vessel Containers (2-min window)",
       "type": "timeseries"
-    },
-
-    {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 },
-      "id": 4,
-      "title": "Service Logs",
-      "type": "row"
-    },
-
-    {
-      "datasource": { "type": "loki", "uid": "loki" },
-      "fieldConfig": { "defaults": {}, "overrides": [] },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
-      "id": 5,
-      "options": {
-        "dedupStrategy": "none",
-        "enableLogDetails": true,
-        "prettifyLogMessage": true,
-        "showCommonLabels": false,
-        "showLabels": false,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": false
-      },
-      "targets": [
-        {
-          "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "{container_name=~\"legion-archon.*\"}",
-          "hide": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Archon Logs",
-      "type": "logs"
-    },
-
-    {
-      "datasource": { "type": "loki", "uid": "loki" },
-      "fieldConfig": { "defaults": {}, "overrides": [] },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
-      "id": 6,
-      "options": {
-        "dedupStrategy": "none",
-        "enableLogDetails": true,
-        "prettifyLogMessage": false,
-        "showCommonLabels": false,
-        "showLabels": false,
-        "showTime": true,
-        "sortOrder": "Descending",
-        "wrapLogMessage": false
-      },
-      "targets": [
-        {
-          "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "{container_name=~\"legion-(otel-collector|tempo|loki|prometheus|grafana|dolt).*\"}",
-          "hide": false,
-          "refId": "A"
-        }
-      ],
-      "title": "Infrastructure Logs (OTel · Tempo · Loki · Prometheus · Dolt)",
-      "type": "logs"
-    },
-
-    {
-      "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 },
-      "id": 7,
-      "title": "Metrics",
-      "type": "row"
     },
 
     {
@@ -178,7 +82,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 25 },
+      "gridPos": { "h": 5, "w": 4, "x": 8, "y": 1 },
       "id": 8,
       "options": {
         "colorMode": "value",
@@ -222,7 +126,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 25 },
+      "gridPos": { "h": 5, "w": 4, "x": 12, "y": 1 },
       "id": 9,
       "options": {
         "colorMode": "value",
@@ -253,6 +157,51 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "fieldConfig": {
         "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 600 },
+              { "color": "red", "value": 900 }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 5, "w": 4, "x": 16, "y": 1 },
+      "id": 17,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": ["mean"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(legion_vessel_duration_seconds_bucket[1h])) by (le))",
+          "hide": false,
+          "legendFormat": "p95",
+          "refId": "A"
+        }
+      ],
+      "title": "Vessel Duration p95",
+      "type": "stat"
+    },
+
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
           "color": { "mode": "palette-classic" },
           "custom": {
             "drawStyle": "line",
@@ -267,7 +216,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 4, "w": 16, "x": 8, "y": 25 },
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 6 },
       "id": 10,
       "options": {
         "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
@@ -276,14 +225,14 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.5, rate(legion_vessel_duration_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.5, sum(rate(legion_vessel_duration_seconds_bucket[5m])) by (le))",
           "hide": false,
           "legendFormat": "p50",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.95, rate(legion_vessel_duration_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.95, sum(rate(legion_vessel_duration_seconds_bucket[5m])) by (le))",
           "hide": false,
           "legendFormat": "p95",
           "refId": "B"
@@ -295,7 +244,288 @@
 
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 29 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 11 },
+      "id": 18,
+      "title": "Vessel Lifecycle Events",
+      "type": "row"
+    },
+
+    {
+      "datasource": { "type": "loki", "uid": "loki" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "id": 19,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": true,
+        "showCommonLabels": false,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{container_name=~\"legion-archon.*\"} |~ `spawned vessel`",
+          "hide": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Vessel Start Events  (Archon: \"spawned vessel\")",
+      "type": "logs"
+    },
+
+    {
+      "datasource": { "type": "loki", "uid": "loki" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "id": 20,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": true,
+        "showCommonLabels": false,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{container_name=~\"legion-archon.*\"} |~ `vessel exited|vessel timed out`",
+          "hide": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Vessel Stop Events  (exited cleanly · exited with error · timed out)",
+      "type": "logs"
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 },
+      "id": 21,
+      "title": "Issue State Transitions",
+      "type": "row"
+    },
+
+    {
+      "datasource": { "type": "loki", "uid": "loki" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "lineWidth": 1,
+            "pointSize": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "normal" }
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 21 },
+      "id": 22,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "sum(count_over_time({container_name=~\"legion-archon.*\"} |~ `spawned vessel` [5m]))",
+          "hide": false,
+          "legendFormat": "spawned (→ in_progress)",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "sum(count_over_time({container_name=~\"legion-archon.*\"} |= `vessel exited cleanly` [5m]))",
+          "hide": false,
+          "legendFormat": "completed (→ closed)",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "sum(count_over_time({container_name=~\"legion-archon.*\"} |= `vessel exited with error` [5m]))",
+          "hide": false,
+          "legendFormat": "error exit (→ failed)",
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "sum(count_over_time({container_name=~\"legion-archon.*\"} |= `vessel timed out` [5m]))",
+          "hide": false,
+          "legendFormat": "timeout (→ blocked)",
+          "refId": "D"
+        }
+      ],
+      "title": "Issue State Flow Rate (5-min window)",
+      "type": "timeseries"
+    },
+
+    {
+      "datasource": { "type": "loki", "uid": "loki" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 21 },
+      "id": 23,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": true,
+        "showCommonLabels": false,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{container_name=~\"legion-archon.*\"} |~ `spawned vessel|vessel exited cleanly|vessel exited with error|vessel timed out|watcher: container already gone`",
+          "hide": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Issue Lifecycle Log Stream  (spawn → complete / fail)",
+      "type": "logs"
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 },
+      "id": 4,
+      "title": "Service Logs",
+      "type": "row"
+    },
+
+    {
+      "datasource": { "type": "loki", "uid": "loki" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+      "id": 5,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": true,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{container_name=~\"legion-archon.*\"}",
+          "hide": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Archon Logs",
+      "type": "logs"
+    },
+
+    {
+      "datasource": { "type": "loki", "uid": "loki" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+      "id": 6,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{container_name=~\"legion-(otel-collector|tempo|loki|prometheus|grafana|dolt).*\"}",
+          "hide": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Infrastructure Logs (OTel · Tempo · Loki · Prometheus · Dolt)",
+      "type": "logs"
+    },
+
+    {
+      "datasource": { "type": "loki", "uid": "loki" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 36 },
+      "id": 2,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": true,
+        "showCommonLabels": false,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{container_name=~\"legion-vessel-.*\"}",
+          "hide": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Vessel Logs  (legion-vessel-*)",
+      "type": "logs"
+    },
+
+    {
+      "datasource": { "type": "loki", "uid": "loki" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 1,
+            "pointSize": 5,
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" }
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 45 },
+      "id": 3,
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "sum by (container_name) (rate({container_name=~\"legion-.*\"}[1m]))",
+          "hide": false,
+          "legendFormat": "{{container_name}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Log Activity — Lines/sec by Container",
+      "type": "timeseries"
+    },
+
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 50 },
       "id": 11,
       "title": "Errors",
       "type": "row"
@@ -304,12 +534,66 @@
     {
       "datasource": { "type": "loki", "uid": "loki" },
       "fieldConfig": { "defaults": {}, "overrides": [] },
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 30 },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 51 },
+      "id": 24,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": true,
+        "showCommonLabels": false,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{container_name=~\"legion-archon.*\"} |= `vessel exited with error`",
+          "hide": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Vessel Non-Zero Exits  (exit_code, label: failed:refusal/tokens/timeout/internal)",
+      "type": "logs"
+    },
+
+    {
+      "datasource": { "type": "loki", "uid": "loki" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 51 },
+      "id": 25,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": true,
+        "showCommonLabels": false,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{container_name=~\"legion-archon.*\"} |= `vessel timed out`",
+          "hide": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Vessel Timeouts  (watcher loop timeout evictions)",
+      "type": "logs"
+    },
+
+    {
+      "datasource": { "type": "loki", "uid": "loki" },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 58 },
       "id": 12,
       "options": {
         "dedupStrategy": "signature",
         "enableLogDetails": true,
-        "prettifyLogMessage": true,
+        "prettifyLogMessage": false,
         "showCommonLabels": false,
         "showLabels": true,
         "showTime": true,
@@ -322,21 +606,15 @@
           "expr": "{container_name=~\"legion-.*\", level=\"error\"}",
           "hide": false,
           "refId": "A"
-        },
-        {
-          "datasource": { "type": "loki", "uid": "loki" },
-          "expr": "{container_name=~\"legion-.*\"} |= `\"level\":\"error\"`",
-          "hide": false,
-          "refId": "B"
         }
       ],
-      "title": "Recent Errors — All Legion Containers",
+      "title": "Recent Errors — All Legion Containers  (level label = error)",
       "type": "logs"
     },
 
     {
       "collapsed": false,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 38 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 66 },
       "id": 13,
       "title": "ACP Trace Timing (Tempo)",
       "type": "row"
@@ -345,22 +623,8 @@
     {
       "datasource": { "type": "tempo", "uid": "tempo" },
       "fieldConfig": { "defaults": {}, "overrides": [] },
-      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 39 },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 67 },
       "id": 14,
-      "options": {
-        "query": {
-          "filters": [
-            {
-              "id": "service-name",
-              "operator": "=",
-              "scope": "resource",
-              "tag": "service.name",
-              "value": ["legion.vessel-driver"],
-              "valueType": "string"
-            }
-          ]
-        }
-      },
       "targets": [
         {
           "datasource": { "type": "tempo", "uid": "tempo" },
@@ -387,7 +651,7 @@
     {
       "datasource": { "type": "tempo", "uid": "tempo" },
       "fieldConfig": { "defaults": {}, "overrides": [] },
-      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 48 },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 76 },
       "id": 15,
       "targets": [
         {
