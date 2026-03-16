@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	promexporter "go.opentelemetry.io/otel/exporters/prometheus"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -82,6 +83,9 @@ func Setup(ctx context.Context, serviceName string) (
 				sdktrace.WithResource(res),
 			)
 			otel.SetTracerProvider(tp)
+			// Register the W3C TraceContext propagator so callers can use
+			// otel.GetTextMapPropagator() to inject/extract traceparent headers.
+			otel.SetTextMapPropagator(propagation.TraceContext{})
 			tracer = tp.Tracer(serviceName)
 			shutdowns = append(shutdowns, tp.Shutdown)
 		}

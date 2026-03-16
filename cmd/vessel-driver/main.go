@@ -19,6 +19,7 @@ import (
 	acp "github.com/ironpark/go-acp"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/EmmittJ/legion/internal/config"
@@ -397,12 +398,27 @@ func main() {
 
 	ctx := context.Background()
 
+	// If Archon injected a W3C traceparent env var (lg-4zv), extract the parent
+	// span context now — before telemetry.Setup and before the root span starts —
+	// so that tracer.Start below creates a child of Archon's spawn span, linking
+	// the vessel trace to the dispatch trace in Tempo.
+	if tp := os.Getenv("TRACEPARENT"); tp != "" {
+		carrier := propagation.MapCarrier{"traceparent": tp}
+		ctx = propagation.TraceContext{}.Extract(ctx, carrier)
+	}
+
 	// Initialize telemetry. Non-fatal: a noop tracer/meter is returned on
 	// failure so the rest of the binary continues without distributed tracing.
 	tracer, _, _, shutdown, err := telemetry.Setup(ctx, "legion.vessel-driver")
 	if err != nil {
 		slog.Error("telemetry setup failed", "err", err)
 		// non-fatal — continue
+	}
+
+	// Log after telemetry.Setup so the JSON handler is active and Loki's
+	// parser sees a consistent format for every log line.
+	if tp := os.Getenv("TRACEPARENT"); tp != "" {
+		slog.InfoContext(ctx, "extracted parent trace context", "traceparent", tp)
 	}
 	// IMPORTANT: vessel-driver is short-lived. This defer is the only
 	// mechanism that flushes buffered spans to Jaeger before exit.

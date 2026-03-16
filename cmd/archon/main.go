@@ -16,6 +16,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
 	archoncfg "github.com/EmmittJ/legion/internal/config"
@@ -473,6 +474,17 @@ func spawnVessel(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, i
 		args = append(args, "-e", "OTEL_EXPORTER_OTLP_ENDPOINT="+ep)
 	}
 	args = append(args, "-e", "OTEL_SERVICE_NAME=legion.vessel-driver")
+
+	// Propagate the spawn span's trace context into the vessel container using
+	// the W3C traceparent format (lg-4zv). vessel-driver reads this env var on
+	// startup and creates its root span as a child, linking the two traces.
+	prop := propagation.TraceContext{}
+	carrier := propagation.MapCarrier{}
+	prop.Inject(ctx, carrier)
+	if tp := carrier.Get("traceparent"); tp != "" {
+		args = append(args, "-e", "TRACEPARENT="+tp)
+	}
+
 	args = append(args, cfg.vesselImage)
 
 	_, err = run("docker", args...)
@@ -529,22 +541,28 @@ func pulse(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *trac
 	ctx, span := o.tracer.Start(ctx, "legion.archon.pulse")
 	defer span.End()
 
+	// Inject trace_id so Loki log lines link back to the Tempo trace (lg-030).
+	logger := slog.Default()
+	if sc := span.SpanContext(); sc.IsValid() {
+		logger = logger.With("trace_id", sc.TraceID().String())
+	}
+
 	issues, err := listReadyIssues(acfg.Routing.DispatchLabel)
 	if err != nil {
-		slog.ErrorContext(ctx, "pulse: listing ready issues", "err", err)
+		logger.ErrorContext(ctx, "pulse: listing ready issues", "err", err)
 		span.RecordError(err)
 		return
 	}
-	slog.DebugContext(ctx, "pulse: bd ready result", "issues", len(issues))
+	logger.DebugContext(ctx, "pulse: bd ready result", "issues", len(issues))
 
 	spawned := 0
 	for _, iss := range issues {
 		if isInfraIssue(iss) {
-			slog.DebugContext(ctx, "pulse: skipping infra issue", "issue_id", iss.ID, "labels", iss.Labels)
+			logger.DebugContext(ctx, "pulse: skipping infra issue", "issue_id", iss.ID, "labels", iss.Labels)
 			continue
 		}
 		if isEscalatedIssue(iss) {
-			slog.InfoContext(ctx, "pulse: skipping escalated issue — human intervention required",
+			logger.InfoContext(ctx, "pulse: skipping escalated issue — human intervention required",
 				"issue_id", iss.ID, "labels", iss.Labels)
 			continue
 		}
@@ -555,21 +573,21 @@ func pulse(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *trac
 		agent := agentLabel(iss)
 		roleName := inferRole(iss, acfg.Routing.DefaultRole)
 		if vesselLimitReached(t, acfg, roleName, agent) {
-			slog.DebugContext(ctx, "pulse: vessel limit reached", "role", roleName, "agent", agent)
+			logger.DebugContext(ctx, "pulse: vessel limit reached", "role", roleName, "agent", agent)
 			continue
 		}
 		if err := claimIssue(iss.ID); err != nil {
 			// Another Archon instance may have already claimed it — skip silently.
-			slog.ErrorContext(ctx, "claim issue (skipping)", "issue_id", iss.ID, "err", err)
+			logger.ErrorContext(ctx, "claim issue (skipping)", "issue_id", iss.ID, "err", err)
 			continue
 		}
 		if err := spawnVessel(ctx, cfg, acfg, iss.ID, name, roleName, agent, iss.Title, iss.Description, iss.AcceptanceCriteria, iss.Labels, o); err != nil {
-			slog.ErrorContext(ctx, "spawning vessel", "issue_id", iss.ID, "err", err)
+			logger.ErrorContext(ctx, "spawning vessel", "issue_id", iss.ID, "err", err)
 			markError(ctx, iss.ID, fmt.Sprintf("spawn failed: %v", err))
 			continue
 		}
 		t.add(name, iss.ID, iss.Title, roleName, agent)
-		slog.InfoContext(ctx, "spawned vessel", "container", name, "issue_id", iss.ID, "agent", agent, "role", roleName)
+		logger.InfoContext(ctx, "spawned vessel", "container", name, "issue_id", iss.ID, "agent", agent, "role", roleName)
 		spawned++
 	}
 
@@ -586,6 +604,12 @@ func watch(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *trac
 	ctx, span := o.tracer.Start(ctx, "legion.archon.watcher.tick")
 	defer span.End()
 
+	// Inject trace_id so Loki log lines link back to the Tempo trace (lg-030).
+	logger := slog.Default()
+	if sc := span.SpanContext(); sc.IsValid() {
+		logger = logger.With("trace_id", sc.TraceID().String())
+	}
+
 	for name, e := range t.snapshot() {
 		state, err := inspectState(name)
 		if err != nil {
@@ -594,7 +618,7 @@ func watch(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *trac
 				// Container was auto-removed (--rm) before we could inspect it.
 				// Treat as terminal: evict from tracker and mark the issue failed
 				// so the pulse loop can spawn a replacement.
-				slog.WarnContext(ctx, "watcher: container already gone, evicting",
+				logger.WarnContext(ctx, "watcher: container already gone, evicting",
 					"container", name, "issue_id", e.issueID, "err", err)
 				span.AddEvent("vessel.gone", trace.WithAttributes(
 					attribute.String("issue.id", e.issueID),
@@ -605,14 +629,14 @@ func watch(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *trac
 				delete(lastHeartbeat, name)
 			} else {
 				// Transient error (daemon not responding, etc.) — retry next tick.
-				slog.ErrorContext(ctx, "watcher: inspect failed", "container", name, "err", err)
+				logger.ErrorContext(ctx, "watcher: inspect failed", "container", name, "err", err)
 				span.RecordError(err)
 			}
 			continue
 		}
 		switch {
 		case state.Status == "exited" && state.ExitCode == 0:
-			slog.InfoContext(ctx, "vessel exited cleanly", "container", name, "issue_id", e.issueID)
+			logger.InfoContext(ctx, "vessel exited cleanly", "container", name, "issue_id", e.issueID)
 			span.AddEvent("vessel.exit", trace.WithAttributes(
 				attribute.String("issue.id", e.issueID),
 				attribute.Int("exit_code", 0),
@@ -628,7 +652,7 @@ func watch(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *trac
 
 		case state.Status == "exited":
 			label := exitLabel(state.ExitCode)
-			slog.WarnContext(ctx, "vessel exited with error",
+			logger.WarnContext(ctx, "vessel exited with error",
 				"container", name, "exit_code", state.ExitCode, "issue_id", e.issueID, "label", label)
 			span.AddEvent("vessel.exit", trace.WithAttributes(
 				attribute.String("issue.id", e.issueID),
@@ -641,14 +665,14 @@ func watch(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *trac
 			delete(lastHeartbeat, name)
 
 		case time.Since(e.startedAt) > acfg.Daemon.VesselTimeout():
-			slog.WarnContext(ctx, "vessel timed out",
+			logger.WarnContext(ctx, "vessel timed out",
 				"container", name, "timeout", acfg.Daemon.VesselTimeout(), "issue_id", e.issueID)
 			span.AddEvent("vessel.timeout", trace.WithAttributes(
 				attribute.String("issue.id", e.issueID),
 			))
 			markBlocked(ctx, e.issueID, "vessel timed out")
 			if _, err := run("docker", "stop", name); err != nil {
-				slog.ErrorContext(ctx, "stopping timed-out vessel", "container", name, "err", err)
+				logger.ErrorContext(ctx, "stopping timed-out vessel", "container", name, "err", err)
 			}
 			removeContainer(ctx, name)
 			t.remove(name)
@@ -657,7 +681,7 @@ func watch(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *trac
 		default:
 			// Container is still running. Emit a heartbeat log at most once every 30 s.
 			if time.Since(lastHeartbeat[name]) >= 30*time.Second {
-				slog.InfoContext(ctx, "vessel still running",
+				logger.InfoContext(ctx, "vessel still running",
 					"container", name,
 					"issue_id", e.issueID,
 					"elapsed", time.Since(e.startedAt).Round(time.Second),
