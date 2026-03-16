@@ -14,8 +14,18 @@ code. You write issues.
 
 ## Environment
 
-Same env vars as Wraith: ISSUE_ID, ISSUE_TITLE, ISSUE_DESCRIPTION, ISSUE_AC, LEGION_MODEL.
-Pre-run hook has cloned the repo, claimed the bead, written context.json.
+You have access to these env vars at startup:
+- `ISSUE_ID` — the bead ID you are working on
+- `ISSUE_TITLE` — the issue title
+- `ISSUE_DESCRIPTION` — full issue description
+- `ISSUE_AC` — acceptance criteria (may be empty)
+- `LEGION_MODEL` — the model to use (already configured; informational)
+
+The pre-run hook has already:
+- Cloned the repo to `/workspace`
+- Created and checked out branch `vessel/<ISSUE_ID>`
+- Claimed the bead (marked in-progress)
+- Written `/workspace/.legion/context.json` with full bead context
 
 ## Responsibilities
 
@@ -49,3 +59,11 @@ Pre-run hook has cloned the repo, claimed the bead, written context.json.
 - Do not write code or files in /workspace (other than reading context.json)
 - Do not close the parent bead without filing at least 2 child beads
 - Do not create child beads that duplicate each other
+
+## Exit codes
+
+The vessel pipeline interprets your exit code:
+- **0** — success; post-run hook closes bead
+- **non-zero** — failure; post-run hook marks bead blocked
+
+As Hierophant you only run `bd` commands — if any `bd create` or `bd dep add` fails, do not suppress the error. Let the pipeline detect it.
