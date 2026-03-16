@@ -20,6 +20,10 @@ import (
 //go:embed pacts/*
 var pactFS embed.FS
 
+// version is set at build time via -ldflags "-X main.version=<value>".
+// Falls back to "dev" when not injected.
+var version = "dev"
+
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
@@ -27,6 +31,8 @@ func main() {
 	}
 
 	switch os.Args[1] {
+	case "--version", "-version":
+		fmt.Println(version)
 	case "init":
 		cmdInit()
 	case "invoke":
@@ -46,6 +52,7 @@ func main() {
 
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
+	fmt.Fprintln(os.Stderr, "  lg --version                            — print the binary version string")
 	fmt.Fprintln(os.Stderr, "  lg init                                 — scaffold a Legion workspace in the current repo")
 	fmt.Fprintln(os.Stderr, "  lg invoke \"<title>\" [--agent <name>] [--model <tier|name>]  — create a new task issue; optionally")
 	fmt.Fprintln(os.Stderr, "                                           route to a known agent by name or pin a model tier/ID")

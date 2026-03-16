@@ -28,6 +28,8 @@ func TestMain_Subprocess(t *testing.T) {
 		os.Args = []string{"lg", "invoke"}
 	case "log_no_args":
 		os.Args = []string{"lg", "log"}
+	case "version_flag":
+		os.Args = []string{"lg", "--version"}
 	default:
 		fmt.Fprintf(os.Stderr, "unknown LG_TEST_MODE: %q\n", mode)
 		os.Exit(2)
@@ -130,5 +132,18 @@ func TestStatusHeaderColumns(t *testing.T) {
 	// Data row sanity: the parsed issue ID should appear in the output.
 	if !strings.Contains(out, "TST-001") {
 		t.Errorf("table output missing issue ID TST-001\nfull output:\n%s", out)
+	}
+}
+
+// TestVersionFlag verifies that "lg --version" prints a version string and
+// exits zero.
+func TestVersionFlag(t *testing.T) {
+	out, err := runSubprocess(t, "version_flag")
+	if err != nil {
+		t.Fatalf("lg --version: expected zero exit, got error: %v\noutput: %s", err, out)
+	}
+	out = strings.TrimSpace(out)
+	if out == "" {
+		t.Errorf("lg --version: expected non-empty version string, got empty output")
 	}
 }
