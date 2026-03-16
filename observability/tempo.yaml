@@ -1,5 +1,8 @@
 server:
   http_listen_port: 3200
+  # gRPC server for the query frontend and Grafana's app-platform gRPC probes.
+  # Port 9095 matches the querier.frontend_worker.frontend_address below.
+  grpc_listen_port: 9095
 
 distributor:
   receivers:

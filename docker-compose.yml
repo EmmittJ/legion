@@ -145,6 +145,13 @@ services:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
       - GF_AUTH_DISABLE_LOGIN_FORM=true
+      # SQLite WAL mode — allows concurrent readers and prevents "database is locked" crashes
+      # under Grafana 11's unified storage reconciliation loop.
+      - GF_DATABASE_WAL=true
+      # Disable the grafana-apiserver's gRPC client loop; it repeatedly tries gRPC on
+      # tempo:3200 (an HTTP/1.1 server) causing log spam and goroutine pressure.
+      # The Tempo *datasource* plugin uses HTTP and is unaffected by this flag.
+      - GF_GRAFANA_APP_PLATFORM_GRPC_SERVER_ENABLED=false
     volumes:
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
