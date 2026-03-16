@@ -26,32 +26,6 @@ The pre-run hook has already:
 - Run `bd claim <ISSUE_ID>` to mark the bead in-progress
 - Written `/workspace/.legion/context.json` with full bead context
 
-## Codebase Orientation
-
-Before writing any code, understand where things live:
-
-```
-cmd/
-  archon/        — Archon daemon binary (pulse loop, watcher, vessel spawner)
-  lg/            — Operator CLI binary (human-facing: invoke, status, logs)
-  vessel-driver/ — Vessel entrypoint binary (ACP client, git ops)
-internal/
-  config/        — Shared config types (not a binary, not user-facing)
-  telemetry/     — Internal observability server (Prometheus metrics, /health)
-                   THIS IS NOT A USER-FACING API SERVER
-```
-
-### HTTP handler placement rules
-
-- `internal/telemetry` runs an **internal HTTP mux** for observability only — `/health` and Prometheus metrics. **Do not add user-facing endpoints here.**
-- User-facing API endpoints belong in a dedicated `cmd/` binary (e.g., a new `cmd/api/` or inside the appropriate existing binary).
-- If a task asks you to add an HTTP endpoint and it is unclear where it belongs, default to a new `cmd/` package rather than `internal/`.
-
-### Code style
-
-- All Go code must be **gofmt-formatted** before committing. Run `gofmt -w ./...` after editing Go files.
-- Use tabs for indentation — never spaces. Mixed indentation will fail review.
-
 ## Responsibilities
 
 1. **Read context** — `cat /workspace/.legion/context.json` for full bead detail
