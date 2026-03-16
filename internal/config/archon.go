@@ -18,6 +18,8 @@ type ArchonConfig struct {
 	Routing ArchonRouting `toml:"routing"`
 	Review  ArchonReview  `toml:"review"`
 	Vessel  ArchonVessel  `toml:"vessel"`
+	Hooks   ArchonHooks   `toml:"hooks"`
+	Hermes  ArchonHermes  `toml:"hermes"`
 }
 
 // ArchonDaemon controls loop timing and per-vessel deadline.
@@ -72,6 +74,28 @@ type ArchonVessel struct {
 	RoleModelDefaults map[string]string `toml:"role_model_defaults"`
 }
 
+// ArchonHooks configures lifecycle event hooks (pre-start, post-stop, pre-pulse).
+// Hooks are optional shell scripts that Archon invokes at specific points.
+// Two-tier resolution: ImageHookDir (production, volume-mounted) then RepoHookDir (dev).
+// PrePulseEnabled gates pre-pulse invocation (default false for performance).
+type ArchonHooks struct {
+	PrePulseEnabled bool   `toml:"pre_pulse_enabled"`     // default false
+	ImageHookDir    string `toml:"image_hook_dir"`         // default /etc/legion/hooks/archon
+	RepoHookDir     string `toml:"repo_hook_dir"`          // default .legion/hooks/archon
+}
+
+// ArchonHermes configures the optional Hermes vessel service.
+type ArchonHermes struct {
+	Enabled        bool   `toml:"enabled"`
+	Image          string `toml:"image"`
+	TimeoutSeconds int    `toml:"timeout_seconds"`
+}
+
+// HermesTimeout converts TimeoutSeconds to a time.Duration.
+func (h ArchonHermes) HermesTimeout() time.Duration {
+	return time.Duration(h.TimeoutSeconds) * time.Second
+}
+
 // defaultArchonConfig returns a fully populated ArchonConfig with safe defaults.
 func defaultArchonConfig() ArchonConfig {
 	return ArchonConfig{
@@ -109,6 +133,16 @@ func defaultArchonConfig() ArchonConfig {
 				"dispatcher": "fast",
 				"planner":    "standard",
 			},
+		},
+		Hooks: ArchonHooks{
+			PrePulseEnabled: false,
+			ImageHookDir:    "/etc/legion/hooks/archon",
+			RepoHookDir:     ".legion/hooks/archon",
+		},
+		Hermes: ArchonHermes{
+			Enabled:        false,
+			Image:          "",
+			TimeoutSeconds: 30,
 		},
 	}
 }
