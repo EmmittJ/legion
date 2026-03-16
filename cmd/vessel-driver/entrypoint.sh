@@ -28,6 +28,10 @@ export BEADS_DOLT_SERVER_PORT="${DOLT_PORT:-3306}"
 # under the name the Copilot CLI expects.
 export GH_TOKEN="${GITHUB_TOKEN}"
 
+# Extract vessel role from LEGION_CONFIG_JSON so post-run.sh can branch on it.
+# Defaults to "worker" if the field is absent (backwards-compatible).
+export LEGION_ROLE=$(echo "$LEGION_CONFIG_JSON" | jq -r '.role_name // "worker"')
+
 /hooks/pre-run.sh
 /vessel-driver || true   # always continues; result.json carries status="error" on failure
 /hooks/post-run.sh       # always runs; exits 1 on error path, 0 on success
