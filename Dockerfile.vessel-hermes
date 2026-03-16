@@ -1,0 +1,27 @@
+# Dockerfile.vessel-hermes — Hermes (routing vessel) container image
+#
+# Derives from legion/vessel-copilot:latest and adds Hermes context files.
+# Hermes reads unlabeled beads and emits a routing decision (one of: worker,
+# hierophant, inquisitor, weaver) via bd update with role:* label.
+#
+# At runtime:
+#  - BEADS_DOLT_SERVER_HOST, BEADS_DOLT_SERVER_PORT, BEADS_DOLT_SERVER_USER
+#    are injected by Archon and override the stub config.
+#  - Archon mounts or injects the issue context (ISSUE_TITLE, etc.) as env vars.
+#  - The vessel pipeline (entrypoint.sh → pre-run.sh → vessel-driver → post-run.sh)
+#    reads these and applies the routing rules in hermes.agent.md.
+
+FROM legion/vessel-copilot:latest
+
+# Copy the Hermes agent config into /etc/legion/agents/ so vessel-driver
+# can COPY it into the container at runtime if needed, or for reference.
+COPY cmd/vessel-driver/hermes.agent.md /etc/legion/agents/
+
+# Create stub Beads config at /etc/legion/.beads/config.yaml.
+# At runtime, BEADS_DOLT_SERVER_* env vars (set by Archon in entrypoint.sh)
+# override these defaults. Schema version must match `bd` binary compatibility.
+RUN mkdir -p /etc/legion/.beads && \
+    echo '{"project_name":"legion","schema_version":"0.60.0"}' > /etc/legion/.beads/config.yaml
+
+# Verify the config was written correctly.
+RUN cat /etc/legion/.beads/config.yaml

@@ -112,6 +112,19 @@ case "${LEGION_ROLE:-worker}" in
     exit 1
     ;;
 
+  hermes)
+    # Hermes is the routing vessel — it reads an unlabeled bead and emits a
+    # role:* label. It does not modify repositories or create branches.
+    # Archon's post-run hook (cmd/vessel-driver/hooks/hermes/post-run.sh)
+    # handles label application. This global post-run.sh just observes success/failure.
+    if [ "$STATUS" = "success" ]; then
+      echo "post-run: hermes vessel complete — routing decision applied"
+      exit 0
+    fi
+    echo "post-run: hermes vessel failed for ${ISSUE_ID}: ${ERROR_MSG}" >&2
+    exit 1
+    ;;
+
   *)
     echo "post-run: unknown role: ${LEGION_ROLE}" >&2
     exit 1

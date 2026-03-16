@@ -19,9 +19,30 @@ ISSUE_ID=$(printf '%s' "$LEGION_CONFIG_JSON" | jq -r '.issue_id // empty')
 REPO_URL=$(printf '%s' "$LEGION_CONFIG_JSON"  | jq -r '.repo_url  // empty')
 
 [ -n "$ISSUE_ID" ] || { echo "pre-run: ERROR — ISSUE_ID is empty (check LEGION_CONFIG_JSON)" >&2; exit 1; }
+
+echo "pre-run: issue=${ISSUE_ID} role=${LEGION_ROLE:-worker}"
+
+# ── HERMES CASE: No git clone, just Beads setup ──────────────────────────────
+# Hermes is Legion's routing vessel. It does not clone or modify repositories.
+# It reads a single bead from Dolt and emits a routing decision (role:* label).
+# Exit early; skip all git operations.
+if [ "${LEGION_ROLE:-worker}" = "hermes" ]; then
+    # Hermes reads from the Beads server, not a git clone.
+    # BEADS_DIR points to the stub config baked into the image.
+    export BEADS_DIR="/etc/legion/.beads"
+    export BEADS_DOLT_SERVER_USER="root"
+    
+    # Prepare workspace directory for symmetry with the worker pipeline.
+    mkdir -p /workspace/.legion
+    
+    echo "pre-run: hermes mode — no git clone, routing via Beads (issue=${ISSUE_ID})"
+    exit 0
+fi
+
+# ── All other roles (worker, hierophant, inquisitor, weaver) require a repo ───
 [ -n "$REPO_URL" ] || { echo "pre-run: ERROR — REPO_URL is empty (check LEGION_CONFIG_JSON)"  >&2; exit 1; }
 
-echo "pre-run: issue=${ISSUE_ID} repo=${REPO_URL}"
+echo "pre-run: repo=${REPO_URL}"
 
 # ── 1. Clone ─────────────────────────────────────────────────────────────────
 # Use git credential store so GITHUB_TOKEN never appears in git error messages,
@@ -33,7 +54,12 @@ git clone "$REPO_URL" /workspace
 cd /workspace
 
 # ── 2. Checkout vessel branch ─────────────────────────────────────────────────
-git checkout -b "vessel/${ISSUE_ID}"
+# Workers create a new feature branch from the cloned default branch.
+# Hierophant and inquisitor vessels operate on an existing branch (the worker's
+# vessel/${ISSUE_ID} branch already exists) — skip branch creation for them.
+if [ "${LEGION_ROLE:-worker}" = "worker" ]; then
+    git checkout -b "vessel/${ISSUE_ID}"
+fi
 
 # ── 3. Configure git user for commits made inside the vessel ─────────────────
 git config user.email "vessel@legion"
@@ -64,4 +90,4 @@ bd show "$ISSUE_ID" --json > /workspace/.legion/context.json
 # issue.json — full VesselConfig blob for the ACP agent to reference as context.
 printf '%s\n' "$LEGION_CONFIG_JSON" > /workspace/.legion/issue.json
 
-echo "pre-run: complete — branch vessel/${ISSUE_ID} ready"
+echo "pre-run: complete — branch vessel/${ISSUE_ID} ready (role=${LEGION_ROLE:-worker})"
