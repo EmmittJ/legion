@@ -193,6 +193,18 @@ type issueItem struct {
 	AcceptanceCriteria string   `json:"acceptance_criteria"`
 }
 
+// isHermesClassifying returns true if the issue has a "hermes:classifying" label,
+// indicating a Hermes classifier vessel is already running for this issue.
+// Used by pulse to prevent double-spawn.
+func isHermesClassifying(labels []string) bool {
+	for _, l := range labels {
+		if l == "hermes:classifying" {
+			return true
+		}
+	}
+	return false
+}
+
 // isInfraIssue returns true for issues that carry infrastructure labels
 // (role definitions, agent definitions). Archon must never spawn vessels for these.
 func isInfraIssue(iss issueItem) bool {
@@ -395,6 +407,18 @@ func containerName(issueID string) string {
 	return "legion-vessel-" + sanitized
 }
 
+// hermesContainerName returns a deterministic Docker container name for a Hermes
+// classifier vessel for the given issue ID.
+func hermesContainerName(issueID string) string {
+	sanitized := strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' {
+			return r
+		}
+		return '-'
+	}, issueID)
+	return "legion-hermes-" + sanitized
+}
+
 // run executes a command and returns its stdout. Stderr is captured and included
 // in the error message on failure.
 func run(name string, args ...string) ([]byte, error) {
@@ -452,6 +476,25 @@ func markError(ctx context.Context, issueID, reason string) {
 func markBlocked(ctx context.Context, issueID, note string) {
 	if _, err := run("bd", "update", issueID, "--status=blocked", "--append-notes", note); err != nil {
 		slog.ErrorContext(ctx, "marking issue blocked", "issue_id", issueID, "err", err)
+	}
+}
+
+// applyDefaultRole adds a "role:<defaultRole>" label to the issue in Beads.
+// Called by watchHermes when a classifier vessel fails or times out so the
+// pulse loop picks up the issue on the next tick with the fallback role.
+func applyDefaultRole(ctx context.Context, defaultRole, issueID string) {
+	if _, err := run("bd", "update", issueID, "--add-label", "role:"+defaultRole); err != nil {
+		slog.ErrorContext(ctx, "applyDefaultRole: failed to add default role label",
+			"issue_id", issueID, "role", defaultRole, "err", err)
+	}
+}
+
+// removeLabel removes a label from an issue in Beads. Best-effort: logs on
+// failure but never crashes Archon.
+func removeLabel(ctx context.Context, label, issueID string) {
+	if _, err := run("bd", "update", issueID, "--remove-label", label); err != nil {
+		slog.ErrorContext(ctx, "removeLabel: failed",
+			"issue_id", issueID, "label", label, "err", err)
 	}
 }
 
@@ -591,6 +634,64 @@ func removeContainer(ctx context.Context, name string) {
 	}
 }
 
+// spawnHermes spawns a Hermes classifier vessel for the given issue.
+// It labels the issue "hermes:classifying" in Beads before starting the container
+// so any concurrent Archon pulse tick does not re-dispatch.  On spawn failure the
+// label is removed so the issue remains eligible for retry.
+func spawnHermes(ctx context.Context, iss issueItem, cfg config, acfg archoncfg.ArchonConfig, ht *tracker) error {
+	if acfg.Hermes.Image == "" {
+		return fmt.Errorf("spawnHermes: hermes.image is not configured")
+	}
+	name := hermesContainerName(iss.ID)
+
+	// Apply the classifying label *before* spawning to prevent double-dispatch.
+	if _, err := run("bd", "update", iss.ID, "--add-label", "hermes:classifying"); err != nil {
+		return fmt.Errorf("spawnHermes: labeling issue %s: %w", iss.ID, err)
+	}
+
+	// Build a minimal VesselConfig so the Hermes vessel can read its identity
+	// via LEGION_CONFIG_JSON using the standard vessel-driver Load() path.
+	vc := archoncfg.VesselConfig{
+		IssueID:  iss.ID,
+		RoleName: "hermes",
+		RepoURL:  cfg.repoURL,
+		ACPSpec: archoncfg.ACPSpec{
+			Transport: "stdio",
+			Backend:   "copilot",
+		},
+	}
+	vc.ApplyDefaults()
+
+	vcJSON, err := json.Marshal(vc)
+	if err != nil {
+		removeLabel(ctx, "hermes:classifying", iss.ID)
+		return fmt.Errorf("spawnHermes: marshaling VesselConfig: %w", err)
+	}
+
+	args := []string{
+		"run", "--detach",
+		"--name", name,
+		"--network=" + cfg.dockerNetwork,
+		"--add-host=host.docker.internal:host-gateway",
+		"-e", "LEGION_CONFIG_JSON=" + string(vcJSON),
+		"-e", "ISSUE_TITLE=" + iss.Title,
+		"-e", "ISSUE_DESCRIPTION=" + iss.Description,
+		"-e", "DOLT_HOST=" + cfg.doltHost,
+		"-e", "DOLT_PORT=" + cfg.doltPort,
+		acfg.Hermes.Image,
+	}
+
+	if _, err := run("docker", args...); err != nil {
+		// Spawn failed — roll back the label so the issue isn't permanently stuck.
+		removeLabel(ctx, "hermes:classifying", iss.ID)
+		return fmt.Errorf("spawnHermes: docker run: %w", err)
+	}
+
+	ht.add(name, iss.ID, iss.Title, "hermes", "")
+	slog.InfoContext(ctx, "spawned hermes", "container", name, "issue_id", iss.ID)
+	return nil
+}
+
 func inspectState(name string) (containerState, error) {
 	out, err := run("docker", "inspect", name, "--format", "{{json .State}}")
 	if err != nil {
@@ -623,7 +724,7 @@ func vesselLimitReached(t *tracker, acfg archoncfg.ArchonConfig, roleName, agent
 }
 
 // pulse is a single execution of the pulse loop body.
-func pulse(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *tracker, o *obs) {
+func pulse(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *tracker, ht *tracker, o *obs) {
 	ctx, span := o.tracer.Start(ctx, "legion.archon.pulse")
 	defer span.End()
 
@@ -663,6 +764,35 @@ func pulse(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *trac
 		if t.has(name) {
 			continue
 		}
+
+		// ── Hermes dispatch gate ────────────────────────────────────────────────
+		// When Hermes is enabled and the issue has no role:* label, route it to a
+		// Hermes classifier vessel first.  The classifier applies a role:* label
+		// and exits; the next pulse tick then dispatches a regular vessel normally.
+		if acfg.Hermes.Enabled {
+			if isHermesClassifying(iss.Labels) {
+				// Hermes is already running for this issue — wait for the watcher.
+				logger.DebugContext(ctx, "pulse: hermes classifying, waiting",
+					"issue_id", iss.ID)
+				continue
+			}
+			hermesName := hermesContainerName(iss.ID)
+			if ht.has(hermesName) {
+				// Container tracked but label may not have propagated yet — skip.
+				continue
+			}
+			if roleLabel(iss.Labels) == "" {
+				// No role assigned yet — dispatch to Hermes for classification.
+				if err := spawnHermes(ctx, iss, cfg, acfg, ht); err != nil {
+					logger.ErrorContext(ctx, "pulse: spawning hermes", "issue_id", iss.ID, "err", err)
+				}
+				continue
+			}
+			// Issue has a role:* label (Hermes already classified it) — fall through
+			// to the normal vessel dispatch path below.
+		}
+		// ── Normal vessel dispatch ──────────────────────────────────────────────
+
 		agent := agentLabel(iss)
 		roleName := inferRole(iss, acfg.Routing.DefaultRole)
 		if vesselLimitReached(t, acfg, roleName, agent) {
@@ -785,7 +915,7 @@ func watch(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *trac
 	}
 }
 
-func pulseLoop(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *tracker, o *obs) {
+func pulseLoop(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *tracker, ht *tracker, o *obs) {
 	ticker := time.NewTicker(acfg.Daemon.PulseInterval())
 	defer ticker.Stop()
 	for {
@@ -793,7 +923,7 @@ func pulseLoop(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			pulse(ctx, cfg, acfg, t, o)
+			pulse(ctx, cfg, acfg, t, ht, o)
 		}
 	}
 }
@@ -808,6 +938,87 @@ func watcherLoop(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t
 			return
 		case <-ticker.C:
 			watch(ctx, cfg, acfg, t, o, lastHeartbeat)
+		}
+	}
+}
+
+// watchHermes is a single tick of the Hermes container watcher.
+// On clean exit (0): remove container and tracker entry; Hermes applied role:*
+// label so the next pulse picks the issue up normally.
+// On error exit or timeout: apply the configured default role, remove the
+// "hermes:classifying" label, and clean up so the issue is eligible for normal dispatch.
+func watchHermes(ctx context.Context, acfg archoncfg.ArchonConfig, ht *tracker) {
+	for name, e := range ht.snapshot() {
+		state, err := inspectState(name)
+		if err != nil {
+			errStr := err.Error()
+			if strings.Contains(errStr, "No such object") || strings.Contains(errStr, "No such container") {
+				// Container is gone before we could inspect it — apply default role
+				// so the issue is not permanently stuck in the classifying state.
+				slog.WarnContext(ctx, "watchHermes: container gone before inspection, applying default role",
+					"container", name, "issue_id", e.issueID)
+				applyDefaultRole(ctx, acfg.Routing.DefaultRole, e.issueID)
+				removeLabel(ctx, "hermes:classifying", e.issueID)
+				ht.remove(name)
+			} else {
+				// Transient error — retry on next tick.
+				slog.ErrorContext(ctx, "watchHermes: inspect failed", "container", name, "err", err)
+			}
+			continue
+		}
+
+		switch {
+		case state.Status == "exited" && state.ExitCode == 0:
+			// Hermes classified the issue and applied a role:* label.
+			// Remove the classifying label defensively — idempotent if the vessel
+			// already removed it, but prevents permanent stall if it did not.
+			slog.InfoContext(ctx, "hermes exited cleanly", "container", name, "issue_id", e.issueID)
+			removeLabel(ctx, "hermes:classifying", e.issueID)
+			removeContainer(ctx, name)
+			ht.remove(name)
+
+		case state.Status == "exited":
+			// Hermes failed — fall back to the default role so the issue makes progress.
+			slog.WarnContext(ctx, "hermes exited with error",
+				"container", name, "exit_code", state.ExitCode, "issue_id", e.issueID)
+			applyDefaultRole(ctx, acfg.Routing.DefaultRole, e.issueID)
+			removeLabel(ctx, "hermes:classifying", e.issueID)
+			removeContainer(ctx, name)
+			ht.remove(name)
+
+		case acfg.Hermes.HermesTimeout() > 0 && time.Since(e.startedAt) > acfg.Hermes.HermesTimeout():
+			// Hermes ran past its deadline — stop it and fall back to default role.
+			slog.WarnContext(ctx, "hermes timed out",
+				"container", name, "timeout", acfg.Hermes.HermesTimeout(), "issue_id", e.issueID)
+			applyDefaultRole(ctx, acfg.Routing.DefaultRole, e.issueID)
+			removeLabel(ctx, "hermes:classifying", e.issueID)
+			if _, err := run("docker", "stop", name); err != nil {
+				slog.ErrorContext(ctx, "watchHermes: stopping timed-out container",
+					"container", name, "err", err)
+			}
+			removeContainer(ctx, name)
+			ht.remove(name)
+
+		default:
+			slog.DebugContext(ctx, "hermes still running",
+				"container", name,
+				"issue_id", e.issueID,
+				"elapsed", time.Since(e.startedAt).Round(time.Second),
+			)
+		}
+	}
+}
+
+// hermesWatcherLoop runs watchHermes on the watcher interval until ctx is cancelled.
+func hermesWatcherLoop(ctx context.Context, acfg archoncfg.ArchonConfig, ht *tracker) {
+	ticker := time.NewTicker(acfg.Daemon.WatcherInterval())
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			watchHermes(ctx, acfg, ht)
 		}
 	}
 }
@@ -852,6 +1063,7 @@ func main() {
 		os.Exit(1)
 	}
 	t := &tracker{runs: make(map[string]entry)}
+	ht := &tracker{runs: make(map[string]entry)} // hermes classifier tracker
 
 	slog.Info("archon starting",
 		"pulse_interval", acfg.Daemon.PulseInterval(),
@@ -880,8 +1092,11 @@ func main() {
 	// watcher loop can time them out or clean them up without re-spawning.
 	reconcile(ctx, t)
 
-	go pulseLoop(ctx, cfg, acfg, t, o)
+	go pulseLoop(ctx, cfg, acfg, t, ht, o)
 	go watcherLoop(ctx, cfg, acfg, t, o)
+	if acfg.Hermes.Enabled {
+		go hermesWatcherLoop(ctx, acfg, ht)
+	}
 
 	<-ctx.Done()
 	slog.Info("received shutdown signal, stopping")
