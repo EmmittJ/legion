@@ -67,6 +67,16 @@ RUN set -eux; \
     && chmod +x /usr/local/bin/copilot \
     && rm -rf /tmp/copilot.tar.gz /tmp/copilot-extract
 
+# GitHub CLI — post-run hooks use `gh pr create` to open pull requests after a
+# vessel completes its work.  Installed from the official tarball (not apt, which
+# is stale on Debian).  Pinned to a specific version for reproducibility.
+RUN set -eux; \
+    GH_VERSION=2.67.0; \
+    curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
+        | tar -xz -C /usr/local/bin --strip-components=2 \
+              "gh_${GH_VERSION}_linux_amd64/bin/gh" \
+    && chmod +x /usr/local/bin/gh
+
 # Vessel Driver — ACP adapter; reads LEGION_CONFIG_JSON, drives Copilot via
 # JSON-RPC over stdio, writes /workspace/result.json.
 COPY --from=builder /vessel-driver /vessel-driver
