@@ -1,16 +1,17 @@
 # Hermes reads this file for routing hint rules.
-# Add rules to help Oracle classify incoming lg invoke requests.
+# IMPORTANT: role values MUST be functional roles only — never agent persona names.
+# Valid role values: worker | planner | reviewer
 # Optional: add model = "fast|standard|premium" to any rule to pin a model tier.
 
 [[rule]]
-pattern = "review"
-role = "inquisitor"
+pattern = "review|audit|validate|QA|inspect"
+role    = "reviewer"
 # model = "premium"
 
 [[rule]]
-pattern = "plan|architect|design"
-role = "hierophant"
+pattern = "plan|architect|design|decompose|spec|merge|integrate|rebase"
+role    = "planner"
 
 [[rule]]
 pattern = ".*"
-role = "worker"
+role    = "worker"

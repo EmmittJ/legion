@@ -282,28 +282,26 @@ func resolveModel(cfg archoncfg.ArchonConfig, labels []string) string {
 }
 
 // inferRole returns the role for an issue: explicit role label > default role from config.
-// Agent-identity labels (e.g. "inquisitor") are mapped to their canonical functional
-// role names so that VesselConfig.RoleName always carries the function, not the persona.
 func inferRole(iss issueItem, defaultRole string) string {
 	if r := roleLabel(iss.Labels); r != "" {
-		return canonicalRole(r)
+		return r
 	}
 	return defaultRole
 }
 
-// canonicalRole maps agent-identity role labels to their functional role names.
-// This is the single authoritative mapping for Option A of the naming decision:
-//
-//	"inquisitor" → "reviewer"   (agent identity → functional role)
-//
-// All other labels are returned unchanged.
-func canonicalRole(label string) string {
-	switch label {
-	case "inquisitor":
-		return "reviewer"
-	default:
-		return label
+// resolveAgent selects an agent from the configured pool for the given role.
+// Returns ("", false) when no pool is configured — caller must skip dispatch.
+// Selection order:
+//  1. Explicit agent: label on the issue — user override, bypasses pool.
+//  2. First agent in cfg.Roles[roleName].Agents (MVP: "first" strategy).
+func resolveAgent(cfg archoncfg.ArchonConfig, iss issueItem, roleName string) (string, bool) {
+	if explicit := agentLabel(iss); explicit != "" {
+		return explicit, true
 	}
+	if rc, ok := cfg.Roles[roleName]; ok && len(rc.Agents) > 0 {
+		return rc.Agents[0], true
+	}
+	return "", false
 }
 
 type containerState struct {
@@ -527,14 +525,13 @@ func markBlockedWithLabel(ctx context.Context, issueID, label string) {
 	}
 }
 
-// createReviewBead creates an Inquisitor review bead in Beads after a worker vessel
+// createReviewBead creates a reviewer role bead in Beads after a worker vessel
 // exits cleanly. Best-effort: logs on failure, never crashes Archon.
 func createReviewBead(ctx context.Context, issueID, issueTitle string) {
 	_, err := run("bd", "create",
 		"Review: "+issueTitle,
 		"--description=Review output of vessel "+issueID+". Branch: vessel/"+issueID+".",
-		"--add-label", "role:inquisitor",
-		"--add-label", "agent:inquisitor",
+		"--add-label", "role:reviewer",
 		"--add-label", "discovered-from:"+issueID,
 		"-t", "task",
 		"-p", "1",
@@ -705,18 +702,13 @@ func inspectState(name string) (containerState, error) {
 }
 
 // vesselLimitReached returns true if spawning a new vessel for the given role
-// and agent would violate any configured limit (global, per-role, or per-agent).
-func vesselLimitReached(t *tracker, acfg archoncfg.ArchonConfig, roleName, agentName string) bool {
+// would violate any configured limit (global or per-role).
+func vesselLimitReached(t *tracker, acfg archoncfg.ArchonConfig, roleName string) bool {
 	if acfg.Limits.MaxGlobal > 0 && t.count() >= acfg.Limits.MaxGlobal {
 		return true
 	}
-	if roleName != "" {
-		if cap, ok := acfg.Limits.ByRole[roleName]; ok && t.countByRole(roleName) >= cap {
-			return true
-		}
-	}
-	if agentName != "" {
-		if cap, ok := acfg.Limits.ByAgent[agentName]; ok && t.countByAgent(agentName) >= cap {
+	if rc, ok := acfg.Roles[roleName]; ok && rc.Limit > 0 {
+		if t.countByRole(roleName) >= rc.Limit {
 			return true
 		}
 	}
@@ -793,9 +785,14 @@ func pulse(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *trac
 		}
 		// ── Normal vessel dispatch ──────────────────────────────────────────────
 
-		agent := agentLabel(iss)
 		roleName := inferRole(iss, acfg.Routing.DefaultRole)
-		if vesselLimitReached(t, acfg, roleName, agent) {
+		agent, ok := resolveAgent(acfg, iss, roleName)
+		if !ok {
+			logger.WarnContext(ctx, "pulse: no agent pool configured for role — skipping",
+				"role", roleName, "issue_id", iss.ID)
+			continue
+		}
+		if vesselLimitReached(t, acfg, roleName) {
 			logger.DebugContext(ctx, "pulse: vessel limit reached", "role", roleName, "agent", agent)
 			continue
 		}

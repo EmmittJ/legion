@@ -27,7 +27,7 @@ type ACPSpec struct {
 type VesselConfig struct {
 	// ── Core identity (all required) ─────────────────────────────────────────
 	IssueID  string  `json:"issue_id"`  // e.g. "lg-abc"
-	RoleName string  `json:"role_name"` // "worker"|"reviewer"|"dispatcher"|"planner"
+	RoleName string  `json:"role_name"` // functional role: "worker"|"planner"|"reviewer"|"dispatcher"
 	RepoURL  string  `json:"repo_url"`  // git clone URL
 	ACPSpec  ACPSpec `json:"acp_spec"`
 

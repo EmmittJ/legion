@@ -3,23 +3,33 @@ package config
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"time"
 
 	"github.com/BurntSushi/toml"
 )
 
+// ArchonRoleConfig defines the agent pool and dispatch behaviour for a single
+// functional role. All fields are optional — Archon applies safe defaults.
+type ArchonRoleConfig struct {
+	Agents   []string `toml:"agents"`   // ordered agent pool; must not be empty when [roles] is set
+	Limit    int      `toml:"limit"`    // concurrent vessel cap; 0 = inherit limits.max_global
+	Strategy string   `toml:"strategy"` // "first" (default) | "round-robin"
+}
+
 // ArchonConfig is the top-level configuration for the Archon daemon.
 // It is loaded from .legion/archon.toml (or LEGION_CONFIG_PATH) and
 // overrideable via environment variables for 12-factor deployments.
 type ArchonConfig struct {
-	Daemon  ArchonDaemon  `toml:"daemon"`
-	Limits  ArchonLimits  `toml:"limits"`
-	Routing ArchonRouting `toml:"routing"`
-	Review  ArchonReview  `toml:"review"`
-	Vessel  ArchonVessel  `toml:"vessel"`
-	Hooks   ArchonHooks   `toml:"hooks"`
-	Hermes  ArchonHermes  `toml:"hermes"`
+	Daemon  ArchonDaemon                `toml:"daemon"`
+	Limits  ArchonLimits                `toml:"limits"`
+	Routing ArchonRouting               `toml:"routing"`
+	Review  ArchonReview                `toml:"review"`
+	Vessel  ArchonVessel                `toml:"vessel"`
+	Hooks   ArchonHooks                 `toml:"hooks"`
+	Hermes  ArchonHermes                `toml:"hermes"`
+	Roles   map[string]ArchonRoleConfig `toml:"roles"`
 }
 
 // ArchonDaemon controls loop timing and per-vessel deadline.
@@ -44,11 +54,10 @@ func (d ArchonDaemon) VesselTimeout() time.Duration {
 	return time.Duration(d.VesselTimeoutSeconds) * time.Second
 }
 
-// ArchonLimits caps concurrent vessel containers globally, per-role, and per-agent.
+// ArchonLimits caps concurrent vessel containers globally and per-role.
+// Per-role limits live in Roles[name].Limit — not here.
 type ArchonLimits struct {
-	MaxGlobal int            `toml:"max_global"` // 0 = unlimited
-	ByRole    map[string]int `toml:"by_role"`
-	ByAgent   map[string]int `toml:"by_agent"`
+	MaxGlobal int `toml:"max_global"` // 0 = unlimited
 }
 
 // ArchonRouting controls the dispatcher and default agent assignment.
@@ -79,9 +88,9 @@ type ArchonVessel struct {
 // Two-tier resolution: ImageHookDir (production, volume-mounted) then RepoHookDir (dev).
 // PrePulseEnabled gates pre-pulse invocation (default false for performance).
 type ArchonHooks struct {
-	PrePulseEnabled bool   `toml:"pre_pulse_enabled"`     // default false
-	ImageHookDir    string `toml:"image_hook_dir"`         // default /etc/legion/hooks/archon
-	RepoHookDir     string `toml:"repo_hook_dir"`          // default .legion/hooks/archon
+	PrePulseEnabled bool   `toml:"pre_pulse_enabled"` // default false
+	ImageHookDir    string `toml:"image_hook_dir"`    // default /etc/legion/hooks/archon
+	RepoHookDir     string `toml:"repo_hook_dir"`     // default .legion/hooks/archon
 }
 
 // ArchonHermes configures the optional Hermes vessel service.
@@ -106,8 +115,6 @@ func defaultArchonConfig() ArchonConfig {
 		},
 		Limits: ArchonLimits{
 			MaxGlobal: 5,
-			ByRole:    map[string]int{"worker": 3, "reviewer": 1, "dispatcher": 2},
-			ByAgent:   map[string]int{},
 		},
 		Routing: ArchonRouting{
 			DefaultRole:    "worker",
@@ -143,6 +150,11 @@ func defaultArchonConfig() ArchonConfig {
 			Enabled:        false,
 			Image:          "",
 			TimeoutSeconds: 30,
+		},
+		Roles: map[string]ArchonRoleConfig{
+			"worker":   {Agents: []string{"wraith"}, Limit: 3, Strategy: "first"},
+			"planner":  {Agents: []string{"hierophant"}, Limit: 1, Strategy: "first"},
+			"reviewer": {Agents: []string{"inquisitor"}, Limit: 1, Strategy: "first"},
 		},
 	}
 }
@@ -247,5 +259,33 @@ func (c *ArchonConfig) Validate() error {
 	if c.Routing.MaxDispatch < 1 {
 		return fmt.Errorf("routing.max_dispatch must be >= 1")
 	}
+	if len(c.Roles) > 0 {
+		if _, ok := c.Roles[c.Routing.DefaultRole]; !ok {
+			return fmt.Errorf("routing.default_role %q is not defined in [roles]; defined roles: %v",
+				c.Routing.DefaultRole, sortedKeys(c.Roles))
+		}
+		validStrategies := map[string]bool{"": true, "first": true, "round-robin": true}
+		for name, rc := range c.Roles {
+			if len(rc.Agents) == 0 {
+				return fmt.Errorf("roles.%s.agents must have at least one entry", name)
+			}
+			if !validStrategies[rc.Strategy] {
+				return fmt.Errorf("roles.%s.strategy %q is invalid; valid values: \"first\", \"round-robin\"", name, rc.Strategy)
+			}
+			if rc.Limit < 0 {
+				return fmt.Errorf("roles.%s.limit must be >= 0 (0 = inherit max_global)", name)
+			}
+		}
+	}
 	return nil
+}
+
+// sortedKeys returns the keys of m sorted alphabetically.
+func sortedKeys(m map[string]ArchonRoleConfig) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

@@ -197,13 +197,12 @@ func TestVesselBranch(t *testing.T) {
 	}{
 		// AC-9: worker branch = vessel/<ISSUE_ID>
 		{role: "worker", issueID: "lg-42", want: "vessel/lg-42"},
-		{role: "hierophant", issueID: "lg-7", reviewBranch: "vessel/lg-5", want: "vessel/lg-5"},
-		{role: "inquisitor", issueID: "lg-8", reviewBranch: "vessel/lg-6", want: "vessel/lg-6"},
+		// planner now also gets vessel/<ISSUE_ID> (lg-azb: functional role separation)
+		{role: "planner", issueID: "lg-7", want: "vessel/lg-7"},
 		{role: "reviewer", issueID: "lg-9", reviewBranch: "vessel/lg-3", want: "vessel/lg-3"},
-		// hermes has no branch
+		// hermes and unknown roles have no branch
 		{role: "hermes", issueID: "lg-1", want: ""},
-		// unknown role falls back to vessel/<issueID>
-		{role: "planner", issueID: "lg-10", want: ""},
+		{role: "unknown-role", issueID: "lg-10", want: ""},
 	}
 	for _, tc := range cases {
 		vc := &config.VesselConfig{

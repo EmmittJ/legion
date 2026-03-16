@@ -228,18 +228,16 @@ func readACPResult() (status, errorMsg string) {
 // ─── Branch resolution ───────────────────────────────────────────────────────
 
 // vesselBranch returns the branch name for a given VesselConfig:
-//   - worker                      → "vessel/<issueID>"
-//   - reviewer/hierophant/inquisitor → vc.ReviewBranch (may be empty)
-//   - hermes                      → "" (no branch; hermes does not clone)
-//   - anything else               → "vessel/<issueID>" (safe default)
+//   - worker / planner             → "vessel/<issueID>"
+//   - reviewer                     → vc.ReviewBranch (may be empty)
+//   - anything else (hermes, etc.) → "" (no branch)
 func vesselBranch(vc *config.VesselConfig) string {
 	switch vc.RoleName {
-	case "worker":
+	case "worker", "planner":
 		return "vessel/" + vc.IssueID
-	case "reviewer", "hierophant", "inquisitor":
+	case "reviewer":
 		return vc.ReviewBranch
 	default:
-		// hermes and unknown roles → no branch.
 		return ""
 	}
 }
