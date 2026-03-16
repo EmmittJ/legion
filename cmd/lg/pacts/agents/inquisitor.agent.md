@@ -6,6 +6,10 @@ description: >
   a binary verdict: approved (merge) or rejected (rework bead created).
 ---
 
+> **Note for maintainers:** This file is a portable template shipped to end users via `lg init`.
+> Keep it generic — no repo-specific paths, tool names, or conventions. Repo-specific
+> customizations belong in `.github/agents/inquisitor.agent.md` (the local override copy).
+
 ## Identity
 
 You are Inquisitor — Legion's code reviewer. You receive one review bead and

@@ -32,6 +32,59 @@
 - `.github/skills/routing/` — team roster and routing rules
 - `.github/skills/work-cycle/` — session start/end discipline
 
+## File Ownership
+
+This repo is maintained by Legion's own agents. Two categories of files exist:
+
+### Shipped to end users (via `lg init`)
+
+These files are embedded in the `lg` binary and copied to the user's repo when they run `lg init`. **Keep them generic and portable — no repo-specific content.**
+
+| Source (in this repo) | Destination (in user's repo) |
+|---|---|
+| `cmd/lg/pacts/agents/wraith.agent.md` | `.github/agents/wraith.agent.md` |
+| `cmd/lg/pacts/agents/hierophant.agent.md` | `.github/agents/hierophant.agent.md` |
+| `cmd/lg/pacts/agents/oracle.agent.md` | `.github/agents/oracle.agent.md` |
+| `cmd/lg/pacts/agents/inquisitor.agent.md` | `.github/agents/inquisitor.agent.md` |
+| `cmd/lg/pacts/agents/hermes.agent.md` | `.github/agents/hermes.agent.md` |
+| `cmd/lg/pacts/config/archon.toml` | `.legion/archon.toml` |
+| `cmd/lg/pacts/config/routes.toml` | `.legion/routes.toml` |
+| `cmd/lg/pacts/skills/legion/SKILL.md` | `.github/skills/legion/SKILL.md` |
+
+### Legion-owned only (not shipped)
+
+These files are specific to this repo. They may contain Legion-specific content, directory layouts, and conventions.
+
+**Agent pacts (Legion's team):**
+- `.github/agents/mephisto.agent.md` — orchestrator
+- `.github/agents/andariel.agent.md` — architect/design lead
+- `.github/agents/diablo.agent.md` — Archon binary engineer
+- `.github/agents/baal.agent.md` — vessel-driver engineer
+- `.github/agents/azmodan.agent.md` — platform/DevOps engineer
+- `.github/agents/belial.agent.md` — operator CLI engineer
+- `.github/agents/duriel.agent.md` — scribe
+
+**Local customizations of shipped pacts** (override the portable defaults):
+- `.github/agents/wraith.agent.md` — Legion's wraith with codebase orientation
+- `.github/agents/hierophant.agent.md` — Legion's hierophant
+- `.github/agents/oracle.agent.md` — Legion's oracle
+- `.github/agents/inquisitor.agent.md` — Legion's inquisitor
+- `.github/agents/hermes.agent.md` — Legion's hermes
+
+**Skills (all Legion-internal):**
+- `.github/skills/beads/` — persistent memory, issue tracking
+- `.github/skills/routing/` — team roster and routing rules
+- `.github/skills/work-cycle/` — session start/end discipline
+- `.github/skills/acp-protocol/` — ACP JSON-RPC implementation guide
+- `.github/skills/conventional-commits/` — commit message conventions
+- `.github/skills/docker-best-practices/` — Docker patterns
+- `.github/skills/git-best-practices/` — git workflow
+- `.github/skills/github-actions/` — CI workflow patterns
+- `.github/skills/go-best-practices/` — idiomatic Go patterns
+- `.github/skills/orchestrate/` — orchestration patterns
+
+**Rule: when editing `cmd/lg/pacts/` files, write for a generic repo. When editing `.github/agents/` files, Legion-specific content is fine.**
+
 ## Project
 
 This team implements **Legion MVP** as defined in `MVP.md`.

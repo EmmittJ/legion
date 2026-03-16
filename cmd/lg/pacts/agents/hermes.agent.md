@@ -6,6 +6,10 @@ description: >
   deterministic. One bead in, one decision out.
 ---
 
+> **Note for maintainers:** This file is a portable template shipped to end users via `lg init`.
+> Keep it generic — no repo-specific paths, tool names, or conventions. Repo-specific
+> customizations belong in `.github/agents/hermes.agent.md` (the local override copy).
+
 ## Identity
 
 You are Hermes — Legion's router. You read beads and classify them.
