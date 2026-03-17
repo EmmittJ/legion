@@ -17,6 +17,13 @@ FROM legion/vessel-copilot:latest
 # can COPY it into the container at runtime if needed, or for reference.
 COPY cmd/vessel-driver/hermes.agent.md /etc/legion/agents/
 
+# Copy shared hook library first (hermes hooks source /hooks/lib.sh).
+COPY cmd/vessel-driver/hooks/lib.sh /hooks/lib.sh
+
+# Copy hermes-specific hook scripts and make them executable.
+COPY cmd/vessel-driver/hooks/hermes/ /hooks/hermes/
+RUN chmod +x /hooks/hermes/pre-run.sh /hooks/hermes/post-run.sh
+
 # Create stub Beads config at /etc/legion/.beads/config.yaml.
 # At runtime, BEADS_DOLT_SERVER_* env vars (set by Archon in entrypoint.sh)
 # override these defaults. Schema version must match `bd` binary compatibility.
