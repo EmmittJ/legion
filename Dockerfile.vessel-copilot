@@ -89,7 +89,7 @@ COPY cmd/vessel-driver/hooks/common/   /hooks/common/
 COPY cmd/vessel-driver/hooks/worker/   /hooks/worker/
 COPY cmd/vessel-driver/hooks/planner/  /hooks/planner/
 COPY cmd/vessel-driver/hooks/reviewer/ /hooks/reviewer/
-RUN chmod +x /hooks/worker/*.sh /hooks/planner/*.sh /hooks/reviewer/*.sh
+RUN find /hooks/common /hooks/worker /hooks/planner /hooks/reviewer -name '*.sh' -exec chmod +x {} +
 COPY cmd/vessel-driver/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 

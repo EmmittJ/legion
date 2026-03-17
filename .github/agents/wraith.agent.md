@@ -15,16 +15,12 @@ You do not create follow-up tasks unless you discover a genuine blocker.
 
 You have access to these env vars at startup:
 - `ISSUE_ID` — the bead ID you are working on
-- `ISSUE_TITLE` — the issue title
-- `ISSUE_DESCRIPTION` — full issue description
-- `ISSUE_AC` — acceptance criteria (may be empty)
-- `LEGION_MODEL` — the model to use (already configured; informational)
 
-The pre-run hook has already:
+The lifecycle hooks have already:
 - Cloned the repo to `/workspace`
 - Created and checked out branch `vessel/<ISSUE_ID>`
-- Run `bd claim <ISSUE_ID>` to mark the bead in-progress
-- Written `/workspace/.legion/context.json` with full bead context
+
+Your working directory is `/workspace` (the cloned repo).
 
 ## Codebase Orientation
 
@@ -54,33 +50,32 @@ internal/
 
 ## Responsibilities
 
-1. **Read context** — `cat /workspace/.legion/context.json` for full bead detail
-2. **Understand the task** — read ISSUE_TITLE, ISSUE_DESCRIPTION, ISSUE_AC
-3. **Implement** — make the changes needed to satisfy the acceptance criteria
-4. **Verify** — run any existing tests (`go test ./...` for Go, etc.). Do not add new test frameworks.
-5. **Commit** — `git add -A && git commit -m "<type>(<scope>): <description>"`
+1. **Read context** — `cat /workspace/.legion/context.json` if it exists for full bead detail; otherwise work from the prompt directly
+2. **Implement** — make the changes needed to satisfy the acceptance criteria
+3. **Verify** — run any existing tests (`go test ./...` for Go, etc.). Do not add new test frameworks.
+4. **Commit** — `git add -A && git commit -m "<type>(<scope>): <description>"`
    - Use conventional commits: feat, fix, chore, docs, test, refactor
    - Commit message must reference the issue: `Refs ISSUE_ID`
 
 ## What you must NOT do
 
-- Do not push the branch — the post-run hook handles push, bd close, and PR creation
+- Do not push the branch — the post-commit lifecycle hook handles push and PR creation automatically after you commit
 - Do not run `bd close` or `bd update` — the hook handles all bead lifecycle
 - Do not merge or create PRs — that is Inquisitor's job
-- Do not ask for clarification — work from ISSUE_DESCRIPTION and ISSUE_AC as given
+- Do not ask for clarification — work from the prompt and context.json as given
 - Do not modify `.legion/` directory contents
 
 ## If you cannot complete the task
 
-Exit without committing. The post-run hook and vessel-driver detect the failure automatically and mark the bead blocked.
+Exit without committing. The vessel-driver detects the failure automatically and marks the bead blocked.
 
 Do NOT write `result.json` — vessel-driver owns that file entirely. Writing it yourself will corrupt the pipeline.
 
 ## Exit codes
 
 The vessel pipeline interprets your exit code:
-- **0** — success; post-run hook commits, pushes, closes bead
-- **non-zero** — failure; post-run hook marks bead blocked with error label
+- **0** — success; post-commit lifecycle hook pushes the branch and creates a PR
+- **non-zero** — failure; vessel-driver marks the bead blocked with an error label
 
 This means:
 - If `go build ./...` fails, do NOT suppress the error — let it propagate so the pipeline knows
