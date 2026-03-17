@@ -23,4 +23,7 @@ legion.code-workspace
 # must never be committed to the branch by post-run.sh's git add -A.
 .legion/context.json
 .legion/issue.json
+.legion/decision.json
+.legion/review_context.md
+.legion/review_state.json
 result.json
