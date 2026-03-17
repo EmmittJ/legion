@@ -52,6 +52,9 @@ type VesselConfig struct {
 	ReviewOriginalIssue string `json:"review_original_issue,omitempty"`
 	ReviewReworkCount   int    `json:"review_rework_count,omitempty"`
 
+	// ── Rework vessels (optional; worker-role only) ───────────────────────────
+	WorkBranch string `json:"work_branch,omitempty"` // non-empty for rework vessels only
+
 	// unexported sentinel — tracks whether DeleteBranchOnMerge was explicitly set in JSON
 	deleteBranchOnMergeExplicit bool
 }
@@ -127,6 +130,9 @@ func (c *VesselConfig) Validate() error {
 		if c.ReviewOriginalIssue == "" {
 			errs = append(errs, "review_original_issue required for reviewer role")
 		}
+	}
+	if c.WorkBranch != "" && c.RoleName != "worker" {
+		errs = append(errs, "work_branch is only valid for role_name=worker")
 	}
 	if len(errs) > 0 {
 		return fmt.Errorf("VesselConfig invalid: %s", strings.Join(errs, "; "))

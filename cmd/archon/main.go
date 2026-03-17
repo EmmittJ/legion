@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -38,11 +39,13 @@ type config struct {
 
 // entry tracks a running vessel container.
 type entry struct {
-	issueID    string
-	issueTitle string
-	startedAt  time.Time
-	roleName   string
-	agentName  string
+	issueID         string
+	issueTitle      string
+	startedAt       time.Time
+	roleName        string
+	agentName       string
+	originalIssueID string // root issue for rework chains; empty for non-rework workers
+	reworkCount     int    // current rework iteration for this vessel; 0 for first-run workers
 }
 
 // tracker holds the set of vessel containers Archon is currently managing.
@@ -58,15 +61,17 @@ func (t *tracker) has(name string) bool {
 	return ok
 }
 
-func (t *tracker) add(name, issueID, issueTitle, roleName, agentName string) {
+func (t *tracker) add(name, issueID, issueTitle, roleName, agentName, originalIssueID string, reworkCount int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.runs[name] = entry{
-		issueID:    issueID,
-		issueTitle: issueTitle,
-		startedAt:  time.Now(),
-		roleName:   roleName,
-		agentName:  agentName,
+		issueID:         issueID,
+		issueTitle:      issueTitle,
+		startedAt:       time.Now(),
+		roleName:        roleName,
+		agentName:       agentName,
+		originalIssueID: originalIssueID,
+		reworkCount:     reworkCount,
 	}
 }
 
@@ -277,6 +282,40 @@ func discoveredFromLabel(labels []string) string {
 	for _, l := range labels {
 		if strings.HasPrefix(l, "discovered-from:") {
 			return strings.TrimPrefix(l, "discovered-from:")
+		}
+	}
+	return ""
+}
+
+// reworkCountLabel parses "review-rework-count:N" → N. Returns 0 if absent or unparseable.
+func reworkCountLabel(labels []string) int {
+	for _, l := range labels {
+		if after, ok := strings.CutPrefix(l, "review-rework-count:"); ok {
+			n, err := strconv.Atoi(strings.TrimSpace(after))
+			if err != nil {
+				return 0
+			}
+			return n
+		}
+	}
+	return 0
+}
+
+// originalIssueLabel parses "original-issue:<id>" → id. Returns "" if absent.
+func originalIssueLabel(labels []string) string {
+	for _, l := range labels {
+		if after, ok := strings.CutPrefix(l, "original-issue:"); ok {
+			return strings.TrimSpace(after)
+		}
+	}
+	return ""
+}
+
+// workBranchLabel parses "work-branch:<branch>" → branch. Returns "" if absent.
+func workBranchLabel(labels []string) string {
+	for _, l := range labels {
+		if after, ok := strings.CutPrefix(l, "work-branch:"); ok {
+			return strings.TrimSpace(after)
 		}
 	}
 	return ""
@@ -549,7 +588,7 @@ func markBlockedWithLabel(ctx context.Context, issueID, label string) {
 
 // createReviewBead creates a reviewer role bead in Beads after a worker vessel
 // exits cleanly. Best-effort: logs on failure, never crashes Archon.
-func createReviewBead(ctx context.Context, issueID, issueTitle string) {
+func createReviewBead(ctx context.Context, issueID, issueTitle, originalIssueID string, reworkCount int) {
 	_, err := run("bd", "create",
 		"Review: "+issueTitle,
 		"--description=Review output of vessel "+issueID+". Branch: vessel/"+issueID+".",
@@ -558,6 +597,8 @@ func createReviewBead(ctx context.Context, issueID, issueTitle string) {
 		// review-branch:<branch> lets the pulse loop populate VesselConfig.ReviewBranch
 		// without parsing the description text (lg-ldl).
 		"--add-label", "review-branch:vessel/"+issueID,
+		"--add-label", fmt.Sprintf("review-rework-count:%d", reworkCount),
+		"--add-label", "original-issue:"+originalIssueID,
 		"-t", "task",
 		"-p", "1",
 		"--json",
@@ -605,9 +646,14 @@ func spawnVessel(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, i
 	// vessel-driver hooks have the branch available via LEGION_REVIEW_BRANCH
 	// (lg-ldl). The branch is encoded as a label by createReviewBead.
 	if roleName == "reviewer" {
-		vc.ReviewBranch = reviewBranchLabel(labels)
-		vc.ReviewWorkIssue = issueID
-		vc.ReviewOriginalIssue = discoveredFromLabel(labels)
+		vc.ReviewBranch        = reviewBranchLabel(labels)
+		vc.ReviewWorkIssue     = issueID
+		vc.ReviewOriginalIssue = originalIssueLabel(labels)
+		vc.ReviewReworkCount   = reworkCountLabel(labels)
+	}
+
+	if roleName == "worker" {
+		vc.WorkBranch = workBranchLabel(labels)
 	}
 
 	if err := vc.Validate(); err != nil {
@@ -639,6 +685,8 @@ func spawnVessel(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, i
 		// LEGION_REVIEW_BRANCH: required by the reviewer pre-acp hook (lg-ldl).
 		// Empty for non-reviewer roles — harmless; hook only checks it for reviewer.
 		"-e", "LEGION_REVIEW_BRANCH=" + vc.ReviewBranch,
+		// LEGION_WORK_BRANCH: non-empty for rework workers; empty otherwise.
+		"-e", "LEGION_WORK_BRANCH=" + vc.WorkBranch,
 	}
 	if ep := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); ep != "" {
 		args = append(args, "-e", "OTEL_EXPORTER_OTLP_ENDPOINT="+ep)
@@ -728,7 +776,7 @@ func spawnHermes(ctx context.Context, iss issueItem, cfg config, acfg archoncfg.
 		return fmt.Errorf("spawnHermes: docker run: %w", err)
 	}
 
-	ht.add(name, iss.ID, iss.Title, "hermes", "")
+	ht.add(name, iss.ID, iss.Title, "hermes", "", "", 0)
 	slog.InfoContext(ctx, "spawned hermes", "container", name, "issue_id", iss.ID)
 	return nil
 }
@@ -850,7 +898,7 @@ func pulse(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *trac
 			markError(ctx, iss.ID, fmt.Sprintf("spawn failed: %v", err))
 			continue
 		}
-		t.add(name, iss.ID, iss.Title, roleName, agent)
+		t.add(name, iss.ID, iss.Title, roleName, agent, originalIssueLabel(iss.Labels), reworkCountLabel(iss.Labels))
 		logger.InfoContext(ctx, "spawned vessel", "container", name, "issue_id", iss.ID, "agent", agent, "role", roleName)
 		spawned++
 	}
@@ -907,8 +955,12 @@ func watch(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *trac
 			))
 			o.vesselDuration.Record(ctx, time.Since(e.startedAt).Seconds())
 			markDone(ctx, e.issueID)
-			if acfg.Review.Enabled && e.issueTitle != "" {
-				createReviewBead(ctx, e.issueID, e.issueTitle)
+			if acfg.Review.Enabled && e.issueTitle != "" && e.roleName == "worker" {
+				original := e.originalIssueID
+				if original == "" {
+					original = e.issueID // first-run: worker issue IS the original
+				}
+				createReviewBead(ctx, e.issueID, e.issueTitle, original, e.reworkCount)
 			}
 			removeContainer(ctx, name)
 			t.remove(name)
