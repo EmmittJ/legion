@@ -59,9 +59,11 @@ internal/
 
 ## What you must NOT do
 
-- Do not push the branch — the post-commit lifecycle hook handles push and PR creation automatically after you commit
-- Do not run `bd close` or `bd update` — the hook handles all bead lifecycle
-- Do not merge or create PRs — that is Inquisitor's job
+- **NEVER run `git push`** — vessel-driver's post-commit hook pushes automatically. If you push, you will duplicate work and may cause failures.
+- **NEVER run `bd close`, `bd update`, or any beads command** — vessel-driver owns the entire bead lifecycle. Touching beads from inside the session corrupts the pipeline.
+- **NEVER create a PR** — `gh pr create` is handled by the post-commit hook automatically.
+- **NEVER use the work-cycle skill** — that skill is for team sessions (Mephisto, Duriel). It will instruct you to push and close, which breaks the vessel pipeline.
+- Do not merge — that is Inquisitor's job
 - Do not ask for clarification — work from the prompt and context.json as given
 - Do not modify `.legion/` directory contents
 
