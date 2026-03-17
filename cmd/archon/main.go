@@ -260,6 +260,28 @@ func modelLabel(labels []string) string {
 	return ""
 }
 
+// reviewBranchLabel extracts the review branch from a "review-branch:<branch>"
+// label. Returns "" when no such label is present.
+func reviewBranchLabel(labels []string) string {
+	for _, l := range labels {
+		if strings.HasPrefix(l, "review-branch:") {
+			return strings.TrimPrefix(l, "review-branch:")
+		}
+	}
+	return ""
+}
+
+// discoveredFromLabel extracts the originating issue ID from a
+// "discovered-from:<issueID>" label. Returns "" when absent.
+func discoveredFromLabel(labels []string) string {
+	for _, l := range labels {
+		if strings.HasPrefix(l, "discovered-from:") {
+			return strings.TrimPrefix(l, "discovered-from:")
+		}
+	}
+	return ""
+}
+
 // resolveModel determines which model to use for a vessel by consulting, in order:
 //  1. Explicit model: label on the issue — highest priority
 //  2. Role-based default via ModelTiers
@@ -533,6 +555,9 @@ func createReviewBead(ctx context.Context, issueID, issueTitle string) {
 		"--description=Review output of vessel "+issueID+". Branch: vessel/"+issueID+".",
 		"--add-label", "role:reviewer",
 		"--add-label", "discovered-from:"+issueID,
+		// review-branch:<branch> lets the pulse loop populate VesselConfig.ReviewBranch
+		// without parsing the description text (lg-ldl).
+		"--add-label", "review-branch:vessel/"+issueID,
 		"-t", "task",
 		"-p", "1",
 		"--json",
@@ -576,6 +601,19 @@ func spawnVessel(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, i
 	vc.ApplyDefaults()
 	vc.DeleteBranchOnMerge = acfg.Review.DeleteBranchOnMerge
 
+	// Populate reviewer-specific fields so VesselConfig.Validate() passes and
+	// vessel-driver hooks have the branch available via LEGION_REVIEW_BRANCH
+	// (lg-ldl). The branch is encoded as a label by createReviewBead.
+	if roleName == "reviewer" {
+		vc.ReviewBranch = reviewBranchLabel(labels)
+		vc.ReviewWorkIssue = issueID
+		vc.ReviewOriginalIssue = discoveredFromLabel(labels)
+	}
+
+	if err := vc.Validate(); err != nil {
+		return fmt.Errorf("VesselConfig precondition failed for %s: %w", issueID, err)
+	}
+
 	vcJSON, err := json.Marshal(vc)
 	if err != nil {
 		return fmt.Errorf("marshaling VesselConfig: %w", err)
@@ -595,6 +633,9 @@ func spawnVessel(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, i
 		"-e", "ISSUE_DESCRIPTION=" + issueDescription,
 		"-e", "ISSUE_AC=" + issueAC,
 		"-e", "LEGION_MODEL=" + resolveModel(acfg, labels),
+		// LEGION_REVIEW_BRANCH: required by the reviewer pre-acp hook (lg-ldl).
+		// Empty for non-reviewer roles — harmless; hook only checks it for reviewer.
+		"-e", "LEGION_REVIEW_BRANCH=" + vc.ReviewBranch,
 	}
 	if ep := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); ep != "" {
 		args = append(args, "-e", "OTEL_EXPORTER_OTLP_ENDPOINT="+ep)
