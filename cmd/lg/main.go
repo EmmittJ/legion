@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -679,11 +680,18 @@ func discoverAgents() ([]string, error) {
 
 // bdOutput runs a bd subcommand and returns stdout.
 func bdOutput(args ...string) ([]byte, error) {
-	cmd := exec.Command("bd", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bd", args...)
 	stderr := &strings.Builder{}
 	cmd.Stderr = stderr
 	out, err := cmd.Output()
 	if err != nil {
+		// If context timed out but we got output, the command wrote its result
+		// before hanging on auto-push — treat as success.
+		if ctx.Err() == context.DeadlineExceeded && len(out) > 0 {
+			return out, nil
+		}
 		if stderr.Len() > 0 {
 			return nil, fmt.Errorf("bd %s: %w\nstderr: %s", strings.Join(args, " "), err, stderr.String())
 		}
