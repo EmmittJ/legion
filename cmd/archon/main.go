@@ -589,16 +589,12 @@ func markBlockedWithLabel(ctx context.Context, issueID, label string) {
 // createReviewBead creates a reviewer role bead in Beads after a worker vessel
 // exits cleanly. Best-effort: logs on failure, never crashes Archon.
 func createReviewBead(ctx context.Context, issueID, issueTitle, originalIssueID string, reworkCount int) {
+	labels := fmt.Sprintf("role:reviewer,discovered-from:%s,review-branch:vessel/%s,review-rework-count:%d,original-issue:%s,dispatch:auto",
+		issueID, issueID, reworkCount, originalIssueID)
 	_, err := run("bd", "create",
 		"Review: "+issueTitle,
 		"--description=Review output of vessel "+issueID+". Branch: vessel/"+issueID+".",
-		"--add-label", "role:reviewer",
-		"--add-label", "discovered-from:"+issueID,
-		// review-branch:<branch> lets the pulse loop populate VesselConfig.ReviewBranch
-		// without parsing the description text (lg-ldl).
-		"--add-label", "review-branch:vessel/"+issueID,
-		"--add-label", fmt.Sprintf("review-rework-count:%d", reworkCount),
-		"--add-label", "original-issue:"+originalIssueID,
+		"--labels", labels,
 		"-t", "task",
 		"-p", "1",
 		"--json",
@@ -646,10 +642,10 @@ func spawnVessel(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, i
 	// vessel-driver hooks have the branch available via LEGION_REVIEW_BRANCH
 	// (lg-ldl). The branch is encoded as a label by createReviewBead.
 	if roleName == "reviewer" {
-		vc.ReviewBranch        = reviewBranchLabel(labels)
-		vc.ReviewWorkIssue     = issueID
+		vc.ReviewBranch = reviewBranchLabel(labels)
+		vc.ReviewWorkIssue = issueID
 		vc.ReviewOriginalIssue = originalIssueLabel(labels)
-		vc.ReviewReworkCount   = reworkCountLabel(labels)
+		vc.ReviewReworkCount = reworkCountLabel(labels)
 	}
 
 	if roleName == "worker" {
