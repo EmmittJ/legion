@@ -32,7 +32,7 @@ max_dispatch   = 3
 dispatch_label = "dispatch:auto"
 
 [review]
-enabled               = false
+enabled               = true
 max_rework            = 3
 delete_branch_on_merge = true
 
