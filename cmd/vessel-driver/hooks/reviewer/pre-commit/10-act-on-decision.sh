@@ -28,7 +28,15 @@ DELETE_ON_MERGE=$(echo "$LEGION_CONFIG_JSON" | jq -r '.delete_branch_on_merge //
 case "$DECISION" in
   APPROVE)
     legion_log INFO "APPROVE — merging PR #${PR_NUMBER}"
-    gh pr merge --merge "$PR_NUMBER"
+    if ! gh pr merge --merge "$PR_NUMBER" 2>&1; then
+        STATE=$(gh pr view "$PR_NUMBER" --json state --jq '.state' 2>/dev/null || echo "UNKNOWN")
+        if [ "$STATE" = "MERGED" ]; then
+            legion_log WARN "PR #${PR_NUMBER} already merged — continuing"
+        else
+            legion_log ERROR "gh pr merge failed and PR is not merged (state: ${STATE})"
+            exit 1
+        fi
+    fi
     if [ "$DELETE_ON_MERGE" = "true" ]; then
         git push origin --delete "$WORK_BRANCH" \
           || legion_log WARN "branch delete failed (non-fatal)"
@@ -46,13 +54,10 @@ case "$DECISION" in
     else
         legion_log INFO "REJECT — creating rework issue (attempt ${NEXT_COUNT}/${MAX_REWORK})"
         ORIGINAL_TITLE=$(bd show "$ORIGINAL_ID" --json | jq -r '.[0].title')
+        REWORK_LABELS="role:worker,discovered-from:${ORIGINAL_ID},original-issue:${ORIGINAL_ID},work-branch:${WORK_BRANCH},review-rework-count:${NEXT_COUNT},dispatch:auto"
         bd create "Rework: ${ORIGINAL_TITLE}" \
           --description="Rejection reason: ${REASON}" \
-          --add-label "role:worker" \
-          --add-label "discovered-from:${ORIGINAL_ID}" \
-          --add-label "original-issue:${ORIGINAL_ID}" \
-          --add-label "work-branch:${WORK_BRANCH}" \
-          --add-label "review-rework-count:${NEXT_COUNT}" \
+          --labels "$REWORK_LABELS" \
           -t task -p 1 --json
         bd close "$LEGION_ISSUE_ID" \
           --reason "Rejected — rework issue created (attempt ${NEXT_COUNT}/${MAX_REWORK})"
