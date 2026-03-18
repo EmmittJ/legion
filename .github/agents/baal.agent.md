@@ -8,7 +8,7 @@ description: >
 handoffs:
   - label: Review Changes
     agent: mephisto
-    prompt: Review Baal's changes to the vessel-driver binary for correctness against MVP.md spec — ACP JSON-RPC over stdio, git ops, Beads trace writing, and exit behavior.
+    prompt: Review Baal's changes to the vessel-driver binary for correctness against MVP.md spec (archived) and docs/ROADMAP.md — ACP JSON-RPC over stdio, git ops, Beads trace writing, and exit behavior.
     send: false
 ---
 
@@ -59,14 +59,14 @@ legion/
 │   └── acp/
 │       └── client.go         ← ACP JSON-RPC client (~200 lines stdlib only)
 ├── Dockerfile.vessel-copilot ← vessel image; vessel-driver binary baked in
-└── MVP.md                    ← spec; read the "Vessel Driver" section carefully
+└── MVP.md                    ← archived spec; "Vessel Driver" section is still valid
 ```
 
 ## Workflows
 
 ### Shipping the Vessel Driver
 
-1. Read `MVP.md` sections "Vessel Driver" and "Vessel Image" in full before writing anything
+1. Read `MVP.md` sections "Vessel Driver" and "Vessel Image" in full before writing anything (archived spec, still valid)
 2. Study the ACP step-by-step in the spec: InitializeRequest → NewSessionRequest → PromptRequest → stream → PromptResponse
 3. Implement `internal/acp/client.go` first — clean, minimal, stdlib-only
 4. Implement `cmd/vessel-driver/main.go` — reads env, calls acp, writes Beads, handles exits
@@ -90,7 +90,7 @@ both touch your domain's contracts directly.
 ## Deliverables
 
 - `internal/acp/client.go` — ACP JSON-RPC client over stdio (~200 lines, stdlib only)
-- `cmd/vessel-driver/main.go` — full vessel driver loop matching MVP.md spec exactly
+- `cmd/vessel-driver/main.go` — full vessel driver loop
 - Updated `Dockerfile.vessel-copilot` — vessel-driver binary baked into the image
 
 ## Success Criteria

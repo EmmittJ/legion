@@ -1,6 +1,6 @@
 # Container Logging & Troubleshooting
 
-This guide helps you monitor and debug Legion services during MVP testing using Docker Compose container logs.
+This guide helps you monitor and debug Legion services during development using Docker Compose container logs.
 
 ---
 
@@ -163,7 +163,7 @@ docker logs <vessel-container-id> | grep -i error
 
 ---
 
-## Debug Workflow During MVP.1 Testing
+## Debug Workflow
 
 ### Terminal 1: Start Services
 
@@ -198,7 +198,7 @@ In a third terminal, file a test task and monitor it:
 
 ```bash
 # Create a test issue
-lg invoke "Test issue for MVP.1 validation"
+lg invoke "Test issue for smoke test"
 # Output: Created issue: legion-abc123
 
 # Check its status
@@ -308,7 +308,7 @@ docker container rm <container-id>
 - **Docker Compose Docs:** https://docs.docker.com/compose/
 - **Beads CLI:** `bd --help`
 - **Legion Architecture:** See `README.md` for system overview
-- **MVP Success Criteria:** See `MVP.md` for acceptance tests
+- **Current Goals:** See `docs/ROADMAP.md` for current goals
 
 ---
 

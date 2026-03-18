@@ -1,17 +1,17 @@
 # Legion Tests
 
-Integration tests for the Legion MVP: Archon pulse/watcher loops, Vessel Driver ACP client, and `lg` CLI.
+Integration tests for Legion: Archon pulse/watcher loops, Vessel Driver ACP client, and `lg` CLI.
 
 ## Directory Structure
 
 ```
 tests/
 ├── README.md              ← this file
-├── spawn-cycle.sh         ← MVP.1 validation: Archon spawns and monitors vessel
-└── .../                   ← integration tests TBD (MVP.2, MVP.3)
+├── spawn-cycle.sh         ← spawn cycle validation: Archon spawns and monitors vessel
+└── .../                   ← integration tests TBD (end-to-end, review cycle)
 ```
 
-## MVP.1: Spawn Cycle Test
+## Spawn Cycle Test
 
 **File:** `spawn-cycle.sh`
 
@@ -67,7 +67,7 @@ Tests use:
 - Timestamps and color coding for readability
 - `.test-logs/` directory for all artifacts
 
-## Future: MVP.2 & MVP.3 Tests
+## Future: Integration Tests
 
 TODO:
 - **vessel-acp.sh** — Vessel Driver ACP client validation (message framing, error paths)

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Quick-start for MVP.1 spawn cycle test
+# Quick-start for spawn cycle test
 # Run from repo root: bash tests/quick-start.sh
 
 set -e
@@ -7,7 +7,7 @@ set -e
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "╔════════════════════════════════════════════════════════════╗"
-echo "║  Legion MVP.1 Spawn Cycle Test — Quick Start              ║"
+echo "║  Legion Spawn Cycle Test — Quick Start                    ║"
 echo "╚════════════════════════════════════════════════════════════╝"
 echo ""
 echo "Prerequisites:"
@@ -57,13 +57,13 @@ echo "✓ Docker Compose stack is running"
 echo ""
 
 # Run the test
-echo "Starting MVP.1 Spawn Cycle Test..."
+echo "Starting Spawn Cycle Test..."
 echo ""
 
 if bash "${REPO_ROOT}/tests/spawn-cycle.sh"; then
     echo ""
     echo "╔════════════════════════════════════════════════════════════╗"
-    echo "║ ✓ MVP.1 Test PASSED                                       ║"
+    echo "║ ✓ Spawn Cycle Test PASSED                                 ║"
     echo "╚════════════════════════════════════════════════════════════╝"
     echo ""
     echo "Next steps:"
@@ -74,7 +74,7 @@ if bash "${REPO_ROOT}/tests/spawn-cycle.sh"; then
 else
     echo ""
     echo "╔════════════════════════════════════════════════════════════╗"
-    echo "║ ❌ MVP.1 Test FAILED                                       ║"
+    echo "║ ❌ Spawn Cycle Test FAILED                                 ║"
     echo "╚════════════════════════════════════════════════════════════╝"
     echo ""
     echo "Diagnostics:"

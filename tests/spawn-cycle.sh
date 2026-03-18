@@ -113,8 +113,8 @@ check_prerequisites() {
 	log "Checking prerequisites..."
 
 	# Check if we're at repo root
-	if [[ ! -f "${SCRIPT_DIR}/MVP.md" ]]; then
-		die "Not at legion repo root. Expected MVP.md at ${SCRIPT_DIR}"
+	if [[ ! -f "${SCRIPT_DIR}/README.md" ]]; then
+		die "Not at legion repo root. Expected README.md at ${SCRIPT_DIR}"
 	fi
 	log_debug "Repository root: ${SCRIPT_DIR}"
 
@@ -146,7 +146,7 @@ check_prerequisites() {
 create_issue() {
 	log "Creating test issue via lg invoke..."
 
-	local title="MVP.1 spawn test — $(date +%s)"
+	local title="spawn-cycle test — $(date +%s)"
 	log_debug "Issue title: ${title}"
 
 	local output
@@ -276,7 +276,7 @@ collect_logs() {
 
 main() {
 	log "═══════════════════════════════════════════════════════════════"
-	log "MVP.1 Spawn Cycle Validation Test"
+	log "Spawn Cycle Validation Test"
 	log "═══════════════════════════════════════════════════════════════"
 	log "Test output: ${TEST_LOG}"
 
@@ -296,7 +296,7 @@ main() {
 	collect_logs
 
 	log "═══════════════════════════════════════════════════════════════"
-	log_pass "MVP.1 Spawn Cycle Test PASSED"
+	log_pass "Spawn Cycle Test PASSED"
 	log "═══════════════════════════════════════════════════════════════"
 	log "Issue ID: ${ISSUE_ID}"
 	log "Logs: ${LOG_DIR}"

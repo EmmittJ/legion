@@ -222,7 +222,7 @@ bash tests/spawn-cycle.sh
 **Expected output:**
 ```
 ═══════════════════════════════════════════════════════════════
-MVP.1 Spawn Cycle Validation Test
+Spawn Cycle Validation Test
 ═══════════════════════════════════════════════════════════════
 [12:34:56] Checking prerequisites...
 [12:34:56] Creating test issue via lg invoke...
@@ -233,7 +233,7 @@ MVP.1 Spawn Cycle Validation Test
 [PASS] Issue marked closed (vessel completed successfully)
 [12:35:10] Fetching traces for issue...
 [PASS] Traces contain expected markers
-[PASS] MVP.1 Spawn Cycle Test PASSED
+[PASS] Spawn Cycle Test PASSED
 ═══════════════════════════════════════════════════════════════
 Issue ID: legion-abc123
 Logs: .test-logs
@@ -388,7 +388,7 @@ tail -f .test-logs/test-*.log  # Watch latest logs
 
 ### Test script fails: `Not at legion repo root`
 
-**Problem:** Script is run from a directory that doesn't contain `MVP.md`.
+**Problem:** Script is run from a directory that doesn't contain `README.md`.
 
 **Solution:**
 
@@ -396,7 +396,7 @@ tail -f .test-logs/test-*.log  # Watch latest logs
    ```bash
    cd ~/projects/legion  # or your legion directory
    pwd  # Verify current directory
-   ls MVP.md  # Should exist
+   ls README.md  # Should exist
    ```
 
 2. **Run the test:**
@@ -488,7 +488,7 @@ git --version
 Once you have the test harness running:
 
 1. **Read the test script:** `tests/spawn-cycle.sh` documents what each validation step does
-2. **Read MVP.md:** `MVP.md` defines the success criteria for the Archon spawn cycle
+2. **Read docs/ROADMAP.md:** `docs/ROADMAP.md` defines the current phase goals for Legion
 3. **Review integration tests:** `tests/` contains other test suites you can explore
 4. **Check the troubleshooting guide:** `docs/TROUBLESHOOTING.md` for runtime issues
 

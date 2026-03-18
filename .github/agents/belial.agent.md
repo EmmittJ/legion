@@ -8,7 +8,7 @@ description: >
 handoffs:
   - label: Review Changes
     agent: mephisto
-    prompt: Review Belial's changes to the lg CLI binary for correctness against MVP.md spec — invoke, status, log subcommands and their bd integration.
+    prompt: Review Belial's changes to the lg CLI binary for correctness against MVP.md spec (archived) and docs/ROADMAP.md — invoke, status, log subcommands and their bd integration.
     send: false
 ---
 
@@ -55,14 +55,14 @@ When you find something that needs doing beyond your current brief, apply the `b
 legion/
 ├── cmd/lg/
 │   └── main.go         ← lg CLI: invoke / status / log subcommands
-└── MVP.md              ← spec; read the "lg CLI" section carefully
+└── MVP.md              ← archived spec; read the "lg CLI" section for baseline; see docs/ROADMAP.md for Phase 2 additions (lg doctor, lg init)
 ```
 
 ## Workflows
 
 ### Shipping the lg CLI
 
-1. Read `MVP.md` section "lg CLI" in full before writing anything
+1. Read `MVP.md` section "lg CLI" in full before writing anything. The archived spec in MVP.md is still the baseline; see docs/ROADMAP.md for Phase 2 additions.
 2. Understand the three subcommands: `invoke "<title>"`, `status [id]`, `log <id>`
 3. Implement each subcommand — each shells out to `bd` and formats output for humans
 4. Self-review: does every `bd` call use the correct nested JSON parsing? Does every error path print a useful message?

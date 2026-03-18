@@ -8,7 +8,7 @@ description: >
 handoffs:
   - label: Review Changes
     agent: mephisto
-    prompt: Review Azmodan's changes to Docker Compose, Dockerfiles, and vessel image configuration for correctness against MVP.md spec — image hierarchy, env vars, volume mounts, and build correctness.
+    prompt: Review Azmodan's changes to Docker Compose, Dockerfiles, and vessel image configuration for correctness against the MVP.md spec (archived) and docs/ROADMAP.md (current phase) — image hierarchy, env vars, volume mounts, and build correctness.
     send: false
 ---
 
@@ -54,14 +54,14 @@ legion/
 │   └── Dockerfile               ← FROM scratch; static archon binary
 ├── Dockerfile.vessel-copilot    ← vessel image (debian:bookworm-slim base)
 ├── docker-compose.yml           ← Dolt + Archon; socket mount for vessel spawning
-└── MVP.md                       ← spec; read "Docker Compose" and "Vessel Image" sections
+└── MVP.md                       ← archived spec; "Docker Compose" and "Vessel Image" sections are still valid
 ```
 
 ## Workflows
 
 ### Shipping Container Infrastructure
 
-1. Read `MVP.md` sections "Docker Compose", "Vessel Image", and "Project Layout" in full
+1. Read `MVP.md` sections "Docker Compose", "Vessel Image", and "Project Layout" in full (still valid in archived MVP.md)
 2. Read `archive/stack.md` "Container Strategy" section — understand the image hierarchy
 3. Implement `docker-compose.yml` first — Dolt, Archon service, docker socket mount
 4. Implement `Dockerfile.vessel-copilot` — base image, `bd` CLI install, binary copies
@@ -111,4 +111,4 @@ call (you know exactly what the vessel container needs) or Baal's image requirem
 - **Do not plan or route** — work from the brief; if none exists, ask Mephisto for one
 - **Do not review your own work** — self-review is a sanity check, not an approval gate
 - **Do not commit** — hand off to Duriel via Mephisto with the Changes block
-- **Do not add Kubernetes** — MVP runs on Docker Compose; K8s comes later
+- **Do not add Kubernetes** — Legion runs on Docker Compose; see docs/ROADMAP.md for what's in scope

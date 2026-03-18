@@ -64,7 +64,7 @@ When you find something that needs doing beyond your current brief, apply the `b
 
 ### Producing a Design Brief
 
-1. Load `MVP.md` and relevant `decision:read` context
+1. Load `docs/ROADMAP.md` (current phase) and `MVP.md` (archived technical spec)
 2. Define the acceptance criteria — what does "done" look like, unambiguously?
 3. Define the component contracts touched by this feature — env vars, Beads fields, wire formats, exit codes
 4. Identify trade-offs and make a recommendation; record the decision with `decision:create`
@@ -90,7 +90,7 @@ When Mephisto assigns you a `review:` wisp from any specialist:
 - ACP JSON-RPC protocol correctness — wire format, message ordering, error paths
 - Docker spawn correctness — env vars injected, network correct, image referenced correctly
 - Exit code semantics — every binary exit path maps to a correct Beads state update
-- MVP scope discipline — flagging scope creep before it gets committed
+- Phase scope discipline — flagging scope creep before it gets committed
 
 ## Deliverables
 

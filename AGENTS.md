@@ -87,7 +87,7 @@ These files are specific to this repo. They may contain Legion-specific content,
 
 ## Project
 
-This team implements **Legion MVP** as defined in `MVP.md`.
+This team builds Legion. The current phase and goals are defined in `docs/ROADMAP.md`.
 
 Target: `lg invoke "Add a health check endpoint"` → Archon spawns Wraith → Wraith pushes branch → issue closed.
 

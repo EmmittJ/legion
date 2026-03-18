@@ -190,9 +190,9 @@ function Check-Prerequisites {
     Write-Log "Checking prerequisites..."
     
     # Check if we're at repo root
-    $mvpPath = Join-Path $scriptDir "MVP.md"
-    if (-not (Test-Path $mvpPath)) {
-        Test-Exit "Not at legion repo root. Expected MVP.md at $scriptDir"
+    $readmePath = Join-Path $scriptDir "README.md"
+    if (-not (Test-Path $readmePath)) {
+        Test-Exit "Not at legion repo root. Expected README.md at $scriptDir"
     }
     Write-LogDebug "Repository root: $scriptDir"
     
@@ -230,7 +230,7 @@ function Create-Issue {
     Write-Log "Creating test issue via lg invoke..."
     
     $epochSeconds = [int](New-Date -UFormat %s)
-    $title = "MVP.1 spawn test - $epochSeconds"
+    $title = "spawn-cycle test - $epochSeconds"
     Write-LogDebug "Issue title: $title"
     
     $result = Invoke-Command "lg invoke '$title'"
@@ -401,7 +401,7 @@ function Collect-Logs {
 function Main {
     Write-Host ""
     Write-Log "=================================================================="
-    Write-Log "MVP.1 Spawn Cycle Validation Test (Windows PowerShell)"
+    Write-Log "Spawn Cycle Validation Test (Windows PowerShell)"
     Write-Log "=================================================================="
     Write-Log "Test output: $testLog"
     Write-Host ""
@@ -434,7 +434,7 @@ function Main {
         
         Write-Host ""
         Write-Log "=================================================================="
-        Write-LogPass "MVP.1 Spawn Cycle Test PASSED"
+        Write-LogPass "Spawn Cycle Test PASSED"
         Write-Log "=================================================================="
         Write-Log "Issue ID: $issueId"
         Write-Log "Logs: $logDir"

@@ -117,7 +117,7 @@ docker compose build
 
 ## Troubleshooting & Container Logs
 
-During MVP testing, view container logs to debug Archon, Dolt, or vessel issues:
+During development, view container logs to debug Archon, Dolt, or vessel issues:
 
 ```bash
 # All services
@@ -137,11 +137,11 @@ For detailed debugging guide, health checks, and error patterns, see [**`docs/TR
 
 ## Open Issues / Known Limitations
 
-Legion is MVP scope. The loop works; everything else is manual.
+The autonomous loop is proven. See docs/ROADMAP.md for what comes next.
 
 | Gap | Status |
 |---|---|
-| Human reviews and merges branches | By design for MVP — no auto-merge |
+| Auto-merge via Inquisitor | Enabled — Inquisitor reviews and merges PRs autonomously |
 | Human writes task descriptions | No planner agent yet |
 | No CI gating | Human runs tests after reviewing the branch |
 | Single vessel at a time | Archon will queue if a second issue goes ready during an active run |
