@@ -47,8 +47,8 @@ premium  = "claude-opus-4.6"
 
 [vessel.role_model_defaults]
 worker   = "fast"
-planner  = "premium"
-reviewer = "premium"
+planner  = "standard"
+reviewer = "standard"
 
 [hermes]
 enabled         = false
