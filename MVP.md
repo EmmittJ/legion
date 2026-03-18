@@ -1,3 +1,6 @@
+> **STATUS: COMPLETE** — The MVP loop was proven on 2026-03-17. Legion autonomously implemented,
+> reviewed, and merged PR #8 without human intervention. See `docs/ROADMAP.md` for what comes next.
+
 # Legion MVP
 
 > **Goal:** Archon picks up a Beads issue and a Wraith completes it autonomously.
