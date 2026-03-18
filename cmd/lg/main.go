@@ -986,7 +986,7 @@ func checkGitIdentity() doctorResult {
 	email := strings.TrimSpace(string(emailOut))
 
 	switch {
-	case nameErr != nil || name == "" && emailErr != nil || email == "":
+	case (nameErr != nil || name == "") && (emailErr != nil || email == ""):
 		r.status = doctorFail
 		r.detail = "user.name and user.email not set"
 		r.hint = `Set your git identity:
@@ -1007,7 +1007,7 @@ func checkGitIdentity() doctorResult {
 	return r
 }
 
-// gitRoot returns the absolute path to the repository root by running
+// gitRoot returns the absolute path to the repository root by running git rev-parse --show-toplevel.
 func gitRoot() (string, error) {
 	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
 	if err != nil {
