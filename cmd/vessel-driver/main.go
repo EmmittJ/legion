@@ -53,36 +53,36 @@ type hermesResult struct {
 	Role    string `json:"role"`     // "worker" | "hierophant" | "inquisitor"
 }
 
-// writeResult serialises r to /workspace/result.json.  Errors are logged but
+// writeResult serialises r to <workspaceDir>/result.json.  Errors are logged but
 // never fatal — we always want the process to exit with the correct code even
 // if the write fails.
-func writeResult(r vesselResult) {
+func writeResult(workspaceDir string, r vesselResult) {
 	data, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		slog.Error("result marshal failed", "err", err)
 		return
 	}
-	if err := os.MkdirAll("/workspace", 0o755); err != nil {
-		slog.Error("mkdir /workspace failed", "err", err)
+	if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
+		slog.Error("mkdir workspace failed", "dir", workspaceDir, "err", err)
 		return
 	}
-	if err := os.WriteFile("/workspace/result.json", data, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(workspaceDir, "result.json"), data, 0o644); err != nil {
 		slog.Error("write result.json failed", "err", err)
 	}
 }
 
-// writeHermesResult serialises h to /workspace/result.json for hermes mode.
-func writeHermesResult(h hermesResult) {
+// writeHermesResult serialises h to <workspaceDir>/result.json for hermes mode.
+func writeHermesResult(workspaceDir string, h hermesResult) {
 	data, err := json.MarshalIndent(h, "", "  ")
 	if err != nil {
 		slog.Error("hermes result marshal failed", "err", err)
 		return
 	}
-	if err := os.MkdirAll("/workspace", 0o755); err != nil {
-		slog.Error("mkdir /workspace failed", "err", err)
+	if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
+		slog.Error("mkdir workspace failed", "dir", workspaceDir, "err", err)
 		return
 	}
-	if err := os.WriteFile("/workspace/result.json", data, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(workspaceDir, "result.json"), data, 0o644); err != nil {
 		slog.Error("write hermes result.json failed", "err", err)
 	}
 }
@@ -100,11 +100,11 @@ type issueContext struct {
 	Description string `json:"description"`
 }
 
-// readIssueContext reads /workspace/.legion/context.json written by the pre-run hook.
+// readIssueContext reads <workspaceDir>/.legion/context.json written by the pre-run hook.
 // On any read/parse failure it returns a minimal fallback so the ACP session can
 // still start (the agent will see the issue ID at minimum).
-func readIssueContext(issueID string) (*issueContext, error) {
-	data, err := os.ReadFile("/workspace/.legion/context.json")
+func readIssueContext(workspaceDir, issueID string) (*issueContext, error) {
+	data, err := os.ReadFile(filepath.Join(workspaceDir, ".legion", "context.json"))
 	if err != nil {
 		slog.Warn("context.json not found — using fallback prompt", "issue_id", issueID, "err", err)
 		return &issueContext{ID: issueID, Title: "Work on issue " + issueID}, nil
@@ -386,7 +386,7 @@ func (c *vesselClient) KillTerminalCommand(ctx context.Context, params *acp.Kill
 // resolveACPCommand resolves an ACPSpec to a concrete exec arg slice.
 // If modelOverride is non-empty (e.g. from LEGION_MODEL env var), it
 // takes precedence over spec.Model.
-func resolveACPCommand(spec config.ACPSpec, modelOverride string) ([]string, error) {
+func resolveACPCommand(spec config.ACPSpec, modelOverride, workspaceDir string) ([]string, error) {
 	model := spec.Model
 	if modelOverride != "" {
 		model = modelOverride
@@ -400,7 +400,7 @@ func resolveACPCommand(spec config.ACPSpec, modelOverride string) ([]string, err
 		}
 		agentFile := spec.AgentFile
 		if agentFile != "" && !strings.Contains(agentFile, "/") {
-			agentFile = "/workspace/.github/agents/" + agentFile + ".agent.md"
+			agentFile = workspaceDir + "/.github/agents/" + agentFile + ".agent.md"
 		}
 		if agentFile != "" {
 			args = append(args, "--agent", agentFile)
@@ -428,7 +428,7 @@ func runWorkerACPSession(ctx context.Context, vc *config.VesselConfig, legionMod
 	issueID := vc.IssueID
 	branch := vesselBranch(vc) // dispatch.go resolves the correct branch per role
 
-	issue, err := readIssueContext(issueID)
+	issue, err := readIssueContext(vc.WorkspaceDir, issueID)
 	if err != nil {
 		return fmt.Errorf("read issue context: %w", err)
 	}
@@ -436,7 +436,7 @@ func runWorkerACPSession(ctx context.Context, vc *config.VesselConfig, legionMod
 	// Agent identity pre-flight: if agent_name is set the agent file must exist
 	// inside the cloned repo before we spend time starting Copilot.
 	if vc.AgentName != "" {
-		agentFile := "/workspace/.github/agents/" + vc.AgentName + ".agent.md"
+		agentFile := vc.WorkspaceDir + "/.github/agents/" + vc.AgentName + ".agent.md"
 		if _, statErr := os.Stat(agentFile); statErr != nil {
 			return fmt.Errorf("agent file check: %w", statErr)
 		}
@@ -452,7 +452,7 @@ func runWorkerACPSession(ctx context.Context, vc *config.VesselConfig, legionMod
 		trace.WithAttributes(attribute.String("model", vc.ACPSpec.Model)),
 	)
 
-	acpArgs, err := resolveACPCommand(vc.ACPSpec, legionModel)
+	acpArgs, err := resolveACPCommand(vc.ACPSpec, legionModel, vc.WorkspaceDir)
 	if err != nil {
 		acpInitSpan.End()
 		return fmt.Errorf("resolve ACP command: %w", err)
@@ -481,7 +481,7 @@ func runWorkerACPSession(ctx context.Context, vc *config.VesselConfig, legionMod
 	}
 
 	client := &vesselClient{
-		workspace: "/workspace",
+		workspace: vc.WorkspaceDir,
 		terminals: make(map[string]*terminalSession),
 	}
 	conn := acp.NewClientSideConnection(client, acpStdin, acpStdout)
@@ -529,7 +529,7 @@ func runWorkerACPSession(ctx context.Context, vc *config.VesselConfig, legionMod
 	// issues directly during its work.
 	_, acpSessionSpan := tracer.Start(ctx, "legion.vessel.acp.session")
 	sessionResult, err := conn.NewSession(ctx, &acp.NewSessionRequest{
-		Cwd: "/workspace",
+		Cwd: vc.WorkspaceDir,
 		MCPServers: []acp.MCPServer{
 			acp.NewMCPServerStdio("beads", "bd", []string{"mcp"}, []acp.EnvVariable{}),
 		},
@@ -599,7 +599,7 @@ func runWorkerACPSession(ctx context.Context, vc *config.VesselConfig, legionMod
 	slog.InfoContext(ctx, "prompt complete", "stop_reason", stopReason)
 
 	// Write success result for the post-run hook to consume.
-	writeResult(vesselResult{
+	writeResult(vc.WorkspaceDir, vesselResult{
 		IssueID: issueID,
 		Status:  "success",
 		Branch:  branch,
@@ -617,7 +617,7 @@ func runHermesACPSession(ctx context.Context, vc *config.VesselConfig, legionMod
 	issueID := vc.IssueID
 
 	// Read the issue context written by the hermes pre-run hook.
-	issue, err := readIssueContext(issueID)
+	issue, err := readIssueContext(vc.WorkspaceDir, issueID)
 	if err != nil {
 		return fmt.Errorf("read issue context: %w", err)
 	}
@@ -627,7 +627,7 @@ func runHermesACPSession(ctx context.Context, vc *config.VesselConfig, legionMod
 		trace.WithAttributes(attribute.String("model", vc.ACPSpec.Model)),
 	)
 
-	acpArgs, err := resolveACPCommand(vc.ACPSpec, legionModel)
+	acpArgs, err := resolveACPCommand(vc.ACPSpec, legionModel, vc.WorkspaceDir)
 	if err != nil {
 		acpInitSpan.End()
 		return fmt.Errorf("resolve ACP command: %w", err)
@@ -653,7 +653,7 @@ func runHermesACPSession(ctx context.Context, vc *config.VesselConfig, legionMod
 	}
 
 	client := &vesselClient{
-		workspace:     "/workspace",
+		workspace:     vc.WorkspaceDir,
 		terminals:     make(map[string]*terminalSession),
 		captureOutput: true, // hermes captures output to extract the role decision
 	}
@@ -695,7 +695,7 @@ func runHermesACPSession(ctx context.Context, vc *config.VesselConfig, legionMod
 	// ── ACP session ───────────────────────────────────────────────────────────
 	_, acpSessionSpan := tracer.Start(ctx, "legion.vessel.acp.session")
 	sessionResult, err := conn.NewSession(ctx, &acp.NewSessionRequest{
-		Cwd: "/workspace",
+		Cwd: vc.WorkspaceDir,
 		MCPServers: []acp.MCPServer{
 			acp.NewMCPServerStdio("beads", "bd", []string{"mcp"}, []acp.EnvVariable{}),
 		},
@@ -806,7 +806,7 @@ func runHermesACPSession(ctx context.Context, vc *config.VesselConfig, legionMod
 
 	// Write the hermes result.  Status="success" is required so the dispatch
 	// loop's readACPResult() can proceed; .role is read by hooks/hermes/post-run.sh.
-	writeHermesResult(hermesResult{
+	writeHermesResult(vc.WorkspaceDir, hermesResult{
 		Status:  "success",
 		IssueID: issueID,
 		Role:    role,
@@ -825,7 +825,8 @@ func main() {
 		slog.Error("config load failed", "err", err)
 		// writeResult is safe to call here even though telemetry is not yet
 		// initialised.  issueID is unknown at this point so we leave it empty.
-		writeResult(vesselResult{Status: "error", ErrorMessage: "config load: " + err.Error()})
+		// WorkspaceDir defaults to /workspace before config is loaded.
+		writeResult("/workspace", vesselResult{Status: "error", ErrorMessage: "config load: " + err.Error()})
 		os.Exit(1)
 	}
 

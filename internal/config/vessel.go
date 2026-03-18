@@ -55,6 +55,9 @@ type VesselConfig struct {
 	// ── Rework vessels (optional; worker-role only) ───────────────────────────
 	WorkBranch string `json:"work_branch,omitempty"` // non-empty for rework vessels only
 
+	// ── Runtime paths ─────────────────────────────────────────────────────────
+	WorkspaceDir string `json:"workspace_dir,omitempty"` // default: /workspace
+
 	// unexported sentinel — tracks whether DeleteBranchOnMerge was explicitly set in JSON
 	deleteBranchOnMergeExplicit bool
 }
@@ -75,6 +78,9 @@ func (c *VesselConfig) ApplyDefaults() {
 	}
 	if !c.deleteBranchOnMergeExplicit {
 		c.DeleteBranchOnMerge = true // default: delete on merge
+	}
+	if c.WorkspaceDir == "" {
+		c.WorkspaceDir = "/workspace"
 	}
 }
 

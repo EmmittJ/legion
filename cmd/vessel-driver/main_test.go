@@ -16,7 +16,7 @@ func TestResolveACPCommand(t *testing.T) {
 			Model:     "gpt-5-mini",
 			AgentFile: "baal",
 		}
-		got, err := resolveACPCommand(spec, "")
+		got, err := resolveACPCommand(spec, "", "/workspace")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -35,7 +35,7 @@ func TestResolveACPCommand(t *testing.T) {
 			Transport: "stdio",
 			Backend:   "copilot",
 		}
-		got, err := resolveACPCommand(spec, "")
+		got, err := resolveACPCommand(spec, "", "/workspace")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -51,7 +51,7 @@ func TestResolveACPCommand(t *testing.T) {
 			Backend:   "copilot",
 			Model:     "gpt-4",
 		}
-		got, err := resolveACPCommand(spec, "gpt-5-mini")
+		got, err := resolveACPCommand(spec, "gpt-5-mini", "/workspace")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -69,7 +69,7 @@ func TestResolveACPCommand(t *testing.T) {
 			Backend:   "copilot",
 			Model:     "gpt-4",
 		}
-		got, err := resolveACPCommand(spec, legionModel)
+		got, err := resolveACPCommand(spec, legionModel, "/workspace")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -85,7 +85,7 @@ func TestResolveACPCommand(t *testing.T) {
 			Backend:   "raw",
 			AgentFile: "/usr/local/bin/my-agent --flag",
 		}
-		got, err := resolveACPCommand(spec, "")
+		got, err := resolveACPCommand(spec, "", "/workspace")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -100,7 +100,7 @@ func TestResolveACPCommand(t *testing.T) {
 			Transport: "stdio",
 			Backend:   "raw",
 		}
-		_, err := resolveACPCommand(spec, "")
+		_, err := resolveACPCommand(spec, "", "/workspace")
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
@@ -111,7 +111,7 @@ func TestResolveACPCommand(t *testing.T) {
 			Transport: "stdio",
 			Backend:   "grpc",
 		}
-		_, err := resolveACPCommand(spec, "")
+		_, err := resolveACPCommand(spec, "", "/workspace")
 		if err == nil {
 			t.Fatal("expected error, got nil")
 		}
@@ -123,7 +123,7 @@ func TestResolveACPCommand(t *testing.T) {
 			Backend:   "copilot",
 			AgentFile: "/absolute/path/to/agent.agent.md",
 		}
-		got, err := resolveACPCommand(spec, "")
+		got, err := resolveACPCommand(spec, "", "/workspace")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}

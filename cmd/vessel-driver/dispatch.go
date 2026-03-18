@@ -69,7 +69,7 @@ type acpResultJSON struct {
 // within each tier. Missing or unreadable directories are silently skipped.
 //
 // Exported for unit tests.
-func DiscoverHooks(event, role string) []string {
+func DiscoverHooks(event, role, workspaceDir string) []string {
 	type tierSpec struct {
 		dir       string
 		mustExist bool // workspace tiers are silently skipped when absent
@@ -77,8 +77,8 @@ func DiscoverHooks(event, role string) []string {
 	tiers := []tierSpec{
 		{dir: "/hooks/common/" + event},
 		{dir: "/hooks/" + role + "/" + event},
-		{dir: "/workspace/.legion/hooks/common/" + event, mustExist: true},
-		{dir: "/workspace/.legion/hooks/" + role + "/" + event, mustExist: true},
+		{dir: workspaceDir + "/.legion/hooks/common/" + event, mustExist: true},
+		{dir: workspaceDir + "/.legion/hooks/" + role + "/" + event, mustExist: true},
 	}
 
 	var all []string
@@ -152,7 +152,7 @@ func baseHookEnv(vc *config.VesselConfig, branch string) []string {
 		// subprocesses always see them even if the parent env is sparse.
 		{"LEGION_CONFIG_JSON", os.Getenv("LEGION_CONFIG_JSON")},
 		{"GITHUB_TOKEN", os.Getenv("GITHUB_TOKEN")},
-		{"BEADS_DIR", "/workspace/.beads"},
+		{"BEADS_DIR", vc.WorkspaceDir + "/.beads"},
 		{"BEADS_DOLT_SERVER_HOST", os.Getenv("BEADS_DOLT_SERVER_HOST")},
 		{"BEADS_DOLT_SERVER_PORT", os.Getenv("BEADS_DOLT_SERVER_PORT")},
 		{"BEADS_DOLT_SERVER_USER", "root"},
@@ -195,8 +195,8 @@ func runStage(ctx context.Context, hooks []string, env []string) error {
 }
 
 // runOnError discovers and runs all on-error hooks, ignoring every return value.
-func runOnError(ctx context.Context, role string, env []string) {
-	for _, h := range DiscoverHooks(eventOnError, role) {
+func runOnError(ctx context.Context, role, workspaceDir string, env []string) {
+	for _, h := range DiscoverHooks(eventOnError, role, workspaceDir) {
 		if err := runHook(ctx, h, env); err != nil {
 			slog.WarnContext(ctx, "dispatch: on-error hook failed (ignored)",
 				"hook", h, "err", err)
@@ -206,12 +206,12 @@ func runOnError(ctx context.Context, role string, env []string) {
 
 // ─── result.json reader ──────────────────────────────────────────────────────
 
-// readACPResult reads /workspace/result.json and returns the status and any
+// readACPResult reads <workspaceDir>/result.json and returns the status and any
 // error message. If the file is absent, unreadable, or missing the status field,
 // it returns ("error", <descriptive message>) so the caller can treat it as a
 // fatal acp-session failure per spec.
-func readACPResult() (status, errorMsg string) {
-	data, err := os.ReadFile("/workspace/result.json")
+func readACPResult(workspaceDir string) (status, errorMsg string) {
+	data, err := os.ReadFile(filepath.Join(workspaceDir, "result.json"))
 	if err != nil {
 		return "error", "acp-session did not produce result.json"
 	}
@@ -259,8 +259,8 @@ func RunDispatch(ctx context.Context, vc *config.VesselConfig, acpBuiltIn func(c
 	// Caller must return this value immediately after calling fatalFail.
 	fatalFail := func(msg string) int {
 		slog.ErrorContext(ctx, "dispatch: fatal lifecycle error", "msg", msg)
-		runOnError(ctx, role, base)
-		writeResult(vesselResult{
+		runOnError(ctx, role, vc.WorkspaceDir, base)
+		writeResult(vc.WorkspaceDir, vesselResult{
 			IssueID:      vc.IssueID,
 			Status:       "error",
 			ErrorMessage: msg,
@@ -270,25 +270,25 @@ func RunDispatch(ctx context.Context, vc *config.VesselConfig, acpBuiltIn func(c
 
 	// ── pre-clone ─────────────────────────────────────────────────────────────
 	slog.InfoContext(ctx, "dispatch: stage pre-clone")
-	if err := runStage(ctx, DiscoverHooks(eventPreClone, role), base); err != nil {
+	if err := runStage(ctx, DiscoverHooks(eventPreClone, role, vc.WorkspaceDir), base); err != nil {
 		return fatalFail("pre-clone: " + err.Error())
 	}
 
 	// ── post-clone ────────────────────────────────────────────────────────────
 	slog.InfoContext(ctx, "dispatch: stage post-clone")
-	if err := runStage(ctx, DiscoverHooks(eventPostClone, role), base); err != nil {
+	if err := runStage(ctx, DiscoverHooks(eventPostClone, role, vc.WorkspaceDir), base); err != nil {
 		return fatalFail("post-clone: " + err.Error())
 	}
 
 	// ── pre-acp ───────────────────────────────────────────────────────────────
 	slog.InfoContext(ctx, "dispatch: stage pre-acp")
-	if err := runStage(ctx, DiscoverHooks(eventPreACP, role), base); err != nil {
+	if err := runStage(ctx, DiscoverHooks(eventPreACP, role, vc.WorkspaceDir), base); err != nil {
 		return fatalFail("pre-acp: " + err.Error())
 	}
 
 	// ── acp-session ───────────────────────────────────────────────────────────
 	slog.InfoContext(ctx, "dispatch: stage acp-session")
-	acpHooks := DiscoverHooks(eventACPSession, role)
+	acpHooks := DiscoverHooks(eventACPSession, role, vc.WorkspaceDir)
 
 	var acpStatus, acpErrMsg string
 
@@ -298,8 +298,8 @@ func RunDispatch(ctx context.Context, vc *config.VesselConfig, acpBuiltIn func(c
 		if err := acpBuiltIn(ctx); err != nil {
 			return fatalFail("acp-session built-in: " + err.Error())
 		}
-		// Built-in MUST have written /workspace/result.json.
-		acpStatus, acpErrMsg = readACPResult()
+		// Built-in MUST have written <workspaceDir>/result.json.
+		acpStatus, acpErrMsg = readACPResult(vc.WorkspaceDir)
 	} else {
 		// Custom hooks found → run them; they are responsible for writing result.json.
 		slog.InfoContext(ctx, "dispatch: acp-session — custom hooks found",
@@ -307,14 +307,14 @@ func RunDispatch(ctx context.Context, vc *config.VesselConfig, acpBuiltIn func(c
 		if err := runStage(ctx, acpHooks, base); err != nil {
 			return fatalFail("acp-session: " + err.Error())
 		}
-		acpStatus, acpErrMsg = readACPResult()
+		acpStatus, acpErrMsg = readACPResult(vc.WorkspaceDir)
 	}
 
 	// acp-session STATUS=error → run on-error hooks and exit.
 	if acpStatus == "error" {
 		slog.ErrorContext(ctx, "dispatch: acp-session reported error",
 			"error_msg", acpErrMsg)
-		runOnError(ctx, role, enrichedEnv(base, acpStatus, acpErrMsg))
+		runOnError(ctx, role, vc.WorkspaceDir, enrichedEnv(base, acpStatus, acpErrMsg))
 		// result.json already written (by built-in or by custom hook); just exit.
 		return 1
 	}
@@ -324,7 +324,7 @@ func RunDispatch(ctx context.Context, vc *config.VesselConfig, acpBuiltIn func(c
 
 	// ── post-acp (NON-fatal) ──────────────────────────────────────────────────
 	slog.InfoContext(ctx, "dispatch: stage post-acp")
-	for _, h := range DiscoverHooks(eventPostACP, role) {
+	for _, h := range DiscoverHooks(eventPostACP, role, vc.WorkspaceDir) {
 		if err := runHook(ctx, h, postBase); err != nil {
 			// Non-fatal: log warning and continue.
 			slog.WarnContext(ctx, "dispatch: post-acp hook failed (non-fatal — continuing)",
@@ -334,13 +334,13 @@ func RunDispatch(ctx context.Context, vc *config.VesselConfig, acpBuiltIn func(c
 
 	// ── pre-commit ────────────────────────────────────────────────────────────
 	slog.InfoContext(ctx, "dispatch: stage pre-commit")
-	if err := runStage(ctx, DiscoverHooks(eventPreCommit, role), postBase); err != nil {
+	if err := runStage(ctx, DiscoverHooks(eventPreCommit, role, vc.WorkspaceDir), postBase); err != nil {
 		return fatalFail("pre-commit: " + err.Error())
 	}
 
 	// ── post-commit ───────────────────────────────────────────────────────────
 	slog.InfoContext(ctx, "dispatch: stage post-commit")
-	if err := runStage(ctx, DiscoverHooks(eventPostCommit, role), postBase); err != nil {
+	if err := runStage(ctx, DiscoverHooks(eventPostCommit, role, vc.WorkspaceDir), postBase); err != nil {
 		return fatalFail("post-commit: " + err.Error())
 	}
 

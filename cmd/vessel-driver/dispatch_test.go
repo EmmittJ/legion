@@ -138,7 +138,7 @@ func TestDiscoverHooks_TierOrder(t *testing.T) {
 	// Here we just verify that hooksInDir (the building block) and the tier
 	// logic work correctly by testing DiscoverHooks with dirs that don't exist
 	// (should return empty, not panic).
-	got := DiscoverHooks("pre-clone", "worker")
+	got := DiscoverHooks("pre-clone", "worker", t.TempDir())
 	// On the dev machine /hooks and /workspace don't exist — expect empty, not panic.
 	if got == nil {
 		got = []string{}
@@ -221,45 +221,24 @@ func TestVesselBranch(t *testing.T) {
 
 // TestReadACPResult_Absent verifies AC-10: absent result.json → STATUS=error.
 func TestReadACPResult_Absent(t *testing.T) {
-	// Point /workspace/result.json to a temp path that doesn't exist by
-	// temporarily swapping the working dir.  Since readACPResult uses a
-	// hardcoded path, we test through the contract indirectly.
-	//
-	// On the dev machine /workspace/result.json should not exist — if it does
-	// this test would be flaky, so we check the function contract on the abstraction.
-	status, msg := readACPResult()
+	// Use a fresh temp dir — result.json is guaranteed to be absent.
+	dir := t.TempDir()
+	status, msg := readACPResult(dir)
 	if status != "error" {
-		// /workspace/result.json might exist on some machines — that's OK.
-		// The important thing is no panic.
-		t.Logf("readACPResult status=%q msg=%q (file may exist on this machine)", status, msg)
+		t.Errorf("expected status %q for absent result.json, got %q (msg=%q)", "error", status, msg)
 	}
 }
 
 // TestReadACPResult_ValidSuccess exercises the happy path via a temp file.
-// We can't redirect /workspace/result.json, so we test the underlying JSON logic
-// through the exported contract.
 func TestReadACPResult_JSON(t *testing.T) {
-	// Write a valid result.json to /workspace if possible; skip otherwise.
-	if err := os.MkdirAll("/workspace", 0o755); err != nil {
-		t.Skip("cannot create /workspace on this machine")
-	}
-	tmp := filepath.Join("/workspace", "result.json")
-	orig, origErr := os.ReadFile(tmp)
-
-	// Write a test file and restore afterwards.
+	dir := t.TempDir()
+	tmp := filepath.Join(dir, "result.json")
 	testData := `{"status":"success","issue_id":"lg-1","error_message":""}`
 	if err := os.WriteFile(tmp, []byte(testData), 0o644); err != nil {
-		t.Skipf("cannot write %s: %v", tmp, err)
+		t.Fatalf("write result.json: %v", err)
 	}
-	t.Cleanup(func() {
-		if origErr == nil {
-			_ = os.WriteFile(tmp, orig, 0o644)
-		} else {
-			_ = os.Remove(tmp)
-		}
-	})
 
-	status, errMsg := readACPResult()
+	status, errMsg := readACPResult(dir)
 	if status != "success" {
 		t.Errorf("status: got %q, want %q", status, "success")
 	}
@@ -290,15 +269,13 @@ func newMinimalVC(role, issueID string) *config.VesselConfig {
 func TestRunDispatch_NoHooks_CallsBuiltIn(t *testing.T) {
 	ctx := context.Background()
 	vc := newMinimalVC("worker", "lg-99")
+	vc.WorkspaceDir = t.TempDir()
 
 	called := false
 	acpBuiltIn := func(_ context.Context) error {
 		called = true
 		// Write the required result.json so dispatch can continue.
-		if err := os.MkdirAll("/workspace", 0o755); err != nil {
-			return err
-		}
-		return os.WriteFile("/workspace/result.json",
+		return os.WriteFile(filepath.Join(vc.WorkspaceDir, "result.json"),
 			[]byte(`{"status":"success","issue_id":"lg-99"}`), 0o644)
 	}
 
@@ -314,11 +291,9 @@ func TestRunDispatch_NoHooks_CallsBuiltIn(t *testing.T) {
 // TestRunDispatch_BuiltInError_ExitsNonZero verifies that a built-in error causes
 // exit code 1 and result.json is written with STATUS=error.
 func TestRunDispatch_BuiltInError_ExitsNonZero(t *testing.T) {
-	// Ensure /workspace exists for writeResult.
-	_ = os.MkdirAll("/workspace", 0o755)
-
 	ctx := context.Background()
 	vc := newMinimalVC("worker", "lg-100")
+	vc.WorkspaceDir = t.TempDir()
 
 	acpBuiltIn := func(_ context.Context) error {
 		return os.ErrNotExist // simulate ACP failure
@@ -330,7 +305,7 @@ func TestRunDispatch_BuiltInError_ExitsNonZero(t *testing.T) {
 	}
 
 	// Verify result.json was written with STATUS=error (AC from fatalFail path).
-	data, err := os.ReadFile("/workspace/result.json")
+	data, err := os.ReadFile(filepath.Join(vc.WorkspaceDir, "result.json"))
 	if err != nil {
 		t.Fatalf("result.json not written: %v", err)
 	}
@@ -346,14 +321,13 @@ func TestRunDispatch_BuiltInError_ExitsNonZero(t *testing.T) {
 // TestRunDispatch_ACPSessionStatusError_ExitsOne verifies AC behaviour when the
 // built-in writes result.json with STATUS=error (e.g., prompt failed).
 func TestRunDispatch_ACPSessionStatusError_ExitsOne(t *testing.T) {
-	_ = os.MkdirAll("/workspace", 0o755)
-
 	ctx := context.Background()
 	vc := newMinimalVC("worker", "lg-101")
+	vc.WorkspaceDir = t.TempDir()
 
 	acpBuiltIn := func(_ context.Context) error {
 		// Built-in "succeeds" at running, but the ACP session itself failed.
-		return os.WriteFile("/workspace/result.json",
+		return os.WriteFile(filepath.Join(vc.WorkspaceDir, "result.json"),
 			[]byte(`{"status":"error","issue_id":"lg-101","error_message":"prompt timed out"}`),
 			0o644)
 	}
