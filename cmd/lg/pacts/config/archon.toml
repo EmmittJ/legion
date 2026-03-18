@@ -2,6 +2,7 @@
 pulse_interval_seconds   = 10
 watcher_interval_seconds = 30
 vessel_timeout_seconds   = 1800
+prompt_timeout_seconds   = 900
 
 [limits]
 max_global = 5

@@ -1,7 +1,8 @@
 [daemon]
-pulse_interval_seconds   = 10
+pulse_interval_seconds   = 5
 watcher_interval_seconds = 30
 vessel_timeout_seconds   = 1800
+prompt_timeout_seconds   = 900
 
 [limits]
 max_global = 5
@@ -46,7 +47,7 @@ premium  = "claude-opus-4.6"
 
 [vessel.role_model_defaults]
 worker   = "fast"
-planner  = "fast"
+planner  = "premium"
 reviewer = "premium"
 
 [hermes]

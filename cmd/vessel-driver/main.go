@@ -554,8 +554,10 @@ func runWorkerACPSession(ctx context.Context, vc *config.VesselConfig, legionMod
 		trace.WithAttributes(attribute.String("model", vc.ACPSpec.Model)),
 	)
 
-	// Determine prompt timeout — default 5 min, overrideable via VESSEL_TIMEOUT (seconds).
-	timeoutSecs := 300
+	// Determine prompt timeout — default 15 min, overrideable via VESSEL_TIMEOUT (seconds).
+	// Archon always sets VESSEL_TIMEOUT explicitly; the 900-second hardcoded value is
+	// a last-resort fallback for standalone or test runs only.
+	timeoutSecs := 900
 	if v := os.Getenv("VESSEL_TIMEOUT"); v != "" {
 		if n, parseErr := strconv.Atoi(v); parseErr == nil {
 			timeoutSecs = n

@@ -55,6 +55,9 @@ type VesselConfig struct {
 	// ── Rework vessels (optional; worker-role only) ───────────────────────────
 	WorkBranch string `json:"work_branch,omitempty"` // non-empty for rework vessels only
 
+	// ── Prompt deadline ───────────────────────────────────────────────────────
+	PromptTimeoutSeconds int `json:"prompt_timeout_seconds,omitempty"` // default: 900
+
 	// ── Runtime paths ─────────────────────────────────────────────────────────
 	WorkspaceDir string `json:"workspace_dir,omitempty"` // default: /workspace
 
@@ -81,6 +84,9 @@ func (c *VesselConfig) ApplyDefaults() {
 	}
 	if c.WorkspaceDir == "" {
 		c.WorkspaceDir = "/workspace"
+	}
+	if c.PromptTimeoutSeconds <= 0 {
+		c.PromptTimeoutSeconds = 900
 	}
 }
 

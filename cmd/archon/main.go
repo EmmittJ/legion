@@ -627,13 +627,14 @@ func spawnVessel(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, i
 			Model:     resolveModel(acfg, labels),
 			AgentFile: agentName,
 		},
-		AgentName:      agentName,
-		ReviewEnabled:  acfg.Review.Enabled,
-		MaxRework:      acfg.Review.MaxRework,
-		DefaultRole:    acfg.Routing.DefaultRole,
-		MaxDispatch:    acfg.Routing.MaxDispatch,
-		DispatcherMode: acfg.Routing.DispatcherMode,
-		RouterAgent:    acfg.Routing.RouterAgent,
+		AgentName:            agentName,
+		ReviewEnabled:        acfg.Review.Enabled,
+		MaxRework:            acfg.Review.MaxRework,
+		DefaultRole:          acfg.Routing.DefaultRole,
+		MaxDispatch:          acfg.Routing.MaxDispatch,
+		DispatcherMode:       acfg.Routing.DispatcherMode,
+		RouterAgent:          acfg.Routing.RouterAgent,
+		PromptTimeoutSeconds: acfg.Daemon.PromptTimeoutSeconds,
 	}
 	vc.ApplyDefaults()
 	vc.DeleteBranchOnMerge = acfg.Review.DeleteBranchOnMerge
@@ -678,6 +679,9 @@ func spawnVessel(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, i
 		"-e", "ISSUE_DESCRIPTION=" + issueDescription,
 		"-e", "ISSUE_AC=" + issueAC,
 		"-e", "LEGION_MODEL=" + resolveModel(acfg, labels),
+		// VESSEL_TIMEOUT: explicit ACP prompt deadline so vessel-driver's hardcoded
+		// fallback (900 s) is never relied upon in production.
+		"-e", "VESSEL_TIMEOUT=" + strconv.Itoa(vc.PromptTimeoutSeconds),
 		// LEGION_REVIEW_BRANCH: required by the reviewer pre-acp hook (lg-ldl).
 		// Empty for non-reviewer roles — harmless; hook only checks it for reviewer.
 		"-e", "LEGION_REVIEW_BRANCH=" + vc.ReviewBranch,

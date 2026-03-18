@@ -37,6 +37,7 @@ type ArchonDaemon struct {
 	PulseIntervalSeconds   int `toml:"pulse_interval_seconds"`
 	WatcherIntervalSeconds int `toml:"watcher_interval_seconds"`
 	VesselTimeoutSeconds   int `toml:"vessel_timeout_seconds"`
+	PromptTimeoutSeconds   int `toml:"prompt_timeout_seconds"`
 }
 
 // PulseInterval converts PulseIntervalSeconds to a time.Duration.
@@ -52,6 +53,11 @@ func (d ArchonDaemon) WatcherInterval() time.Duration {
 // VesselTimeout converts VesselTimeoutSeconds to a time.Duration.
 func (d ArchonDaemon) VesselTimeout() time.Duration {
 	return time.Duration(d.VesselTimeoutSeconds) * time.Second
+}
+
+// PromptTimeout converts PromptTimeoutSeconds to a time.Duration.
+func (d ArchonDaemon) PromptTimeout() time.Duration {
+	return time.Duration(d.PromptTimeoutSeconds) * time.Second
 }
 
 // ArchonLimits caps concurrent vessel containers globally and per-role.
@@ -112,6 +118,7 @@ func defaultArchonConfig() ArchonConfig {
 			PulseIntervalSeconds:   10,
 			WatcherIntervalSeconds: 30,
 			VesselTimeoutSeconds:   1800,
+			PromptTimeoutSeconds:   900,
 		},
 		Limits: ArchonLimits{
 			MaxGlobal: 5,
