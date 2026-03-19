@@ -10,36 +10,17 @@
 # Usage:
 #   docker compose build
 #   REPO_URL=https://github.com/owner/repo GITHUB_TOKEN=ghp_xxx docker compose up
-# Note: Dolt SQL server runs in the dolt container. Host bd connects via 127.0.0.1:3306. Vessels connect via dolt:3306.
+# Beads (bd): Sanctuary is the single source of truth.
+#   Sanctuary Dolt runs in WSL2 at port 28204, serving the 'le' database.
+#   Windows host bd connects via 127.0.0.1:28204 (proxied by sanctuary-dolt-proxy.py at login).
+#   Docker containers connect via host.docker.internal:28204.
+#   Start Sanctuary first: in WSL2 run 'gc start' from ~/sanctuary before starting this stack.
 
 # IMPORTANT: project name is pinned to "legion" so that Archon's hardcoded
 # --network=legion_legion-net in spawnVessel() always resolves correctly.
-# Do not rename this project or the vessel containers will fail to reach dolt.
 name: legion
 
 services:
-  dolt:
-    image: dolthub/dolt-sql-server:latest
-    command: ["--data-dir=/var/lib/dolt"]
-    environment:
-      - DOLT_ROOT_HOST=%
-    ports:
-      - "3306:3306"   # same port on host and container — .beads/config.yaml server_port: 3306 works for both
-    volumes:
-      - ./.beads/dolt:/var/lib/dolt
-      # init scripts: grants root@% so Archon and vessel containers can connect from any container IP
-      - ./docker-entrypoint-initdb.d:/docker-entrypoint-initdb.d:ro
-    healthcheck:
-      # bash TCP-connect check — no extra packages needed; works in the Ubuntu-based dolt image
-      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/3306' 2>/dev/null || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-    networks:
-      - legion-net
-    restart: unless-stopped
-
   archon:
     build:
       context: .
@@ -58,12 +39,12 @@ services:
       # Network vessels are attached to; must match the compose project-name prefix.
       # Override with DOCKER_NETWORK=<name> if running under a non-default project name.
       - DOCKER_NETWORK=${DOCKER_NETWORK:-legion_legion-net}
-      - DOLT_HOST=dolt
-      - DOLT_PORT=3306
-      # bd v0.60.0+ reads BEADS_DOLT_SERVER_* to override config.yaml server location.
-      # Archon's entrypoint and all bd subprocesses will find dolt:3306 via these vars.
-      - BEADS_DOLT_SERVER_HOST=dolt
-      - BEADS_DOLT_SERVER_PORT=3306
+      # Sanctuary is the single source of truth for beads.
+      # Sanctuary Dolt runs in WSL2 on port 28204; accessible from Docker via host.docker.internal.
+      # Vessels inherit these env vars so all bd calls route to the same Dolt instance.
+      - BEADS_DOLT_SERVER_HOST=host.docker.internal
+      - BEADS_DOLT_SERVER_PORT=28204
+      - BEADS_DOLT_SERVER_DATABASE=le
       - VESSEL_TIMEOUT=900
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
       - OTEL_SERVICE_NAME=legion.archon
@@ -73,8 +54,6 @@ services:
       - ./.legion/archon.toml:/etc/legion/archon.toml:ro
     restart: unless-stopped
     depends_on:
-      dolt:
-        condition: service_healthy
       otel-collector:
         condition: service_started
     networks:
