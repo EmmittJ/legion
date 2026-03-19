@@ -418,6 +418,87 @@ func resolveACPCommand(spec config.ACPSpec, modelOverride, workspaceDir string) 
 	}
 }
 
+// extractAndWriteDecision scans accumulated ACP output for a VERDICT marker line
+// and writes <workspaceDir>/.legion/decision.json for the pre-commit hook to read.
+//
+// Expected marker formats (anywhere in the output, typically at the end):
+//
+//	VERDICT: APPROVE
+//
+// or
+//
+//	VERDICT: REJECT
+//	Reason: <actionable rework instructions>
+//
+// Fatal conditions (returned as errors, which the caller treats as exit 1):
+//   - No line matching "VERDICT: APPROVE" or "VERDICT: REJECT" found
+//   - A "VERDICT: <other>" line is found
+func extractAndWriteDecision(ctx context.Context, output, workspaceDir string) error {
+	lines := strings.Split(output, "\n")
+
+	verdict := ""
+	foundAt := -1
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "VERDICT: ") {
+			continue
+		}
+		val := strings.TrimSpace(strings.TrimPrefix(trimmed, "VERDICT: "))
+		switch val {
+		case "APPROVE", "REJECT":
+			verdict = val
+			foundAt = i
+		default:
+			return fmt.Errorf("reviewer: invalid VERDICT value %q (must be APPROVE or REJECT)", val)
+		}
+		break
+	}
+
+	if foundAt == -1 {
+		slog.ErrorContext(ctx, "reviewer: no VERDICT marker found in ACP output")
+		return fmt.Errorf("reviewer: no VERDICT marker found in ACP output")
+	}
+
+	var reason string
+	if verdict == "APPROVE" {
+		reason = "Approved by inquisitor"
+	} else {
+		// Collect all text after the VERDICT: REJECT line as the reason.
+		rest := strings.TrimSpace(strings.Join(lines[foundAt+1:], "\n"))
+		if rest != "" {
+			reason = rest
+		} else {
+			reason = "Rejected by inquisitor (no reason provided)"
+		}
+	}
+
+	type decisionJSON struct {
+		Decision string `json:"decision"`
+		Reason   string `json:"reason"`
+	}
+	d := decisionJSON{Decision: verdict, Reason: reason}
+	data, err := json.Marshal(d)
+	if err != nil {
+		return fmt.Errorf("reviewer: marshal decision: %w", err)
+	}
+
+	legionDir := filepath.Join(workspaceDir, ".legion")
+	if err := os.MkdirAll(legionDir, 0o755); err != nil {
+		return fmt.Errorf("reviewer: mkdir .legion: %w", err)
+	}
+	decisionPath := filepath.Join(legionDir, "decision.json")
+	if err := os.WriteFile(decisionPath, data, 0o644); err != nil {
+		return fmt.Errorf("reviewer: write decision.json: %w", err)
+	}
+
+	slog.InfoContext(ctx, "reviewer: verdict extracted and written",
+		"decision", verdict,
+		"path", decisionPath,
+	)
+	return nil
+}
+
 // runWorkerACPSession runs the ACP session for worker / reviewer / hierophant /
 // inquisitor roles.  On success it writes /workspace/result.json with
 // STATUS=success.  On failure it returns an error; the dispatch loop's
@@ -483,6 +564,9 @@ func runWorkerACPSession(ctx context.Context, vc *config.VesselConfig, legionMod
 	client := &vesselClient{
 		workspace: vc.WorkspaceDir,
 		terminals: make(map[string]*terminalSession),
+		// reviewer role runs the inquisitor agent; capture its output so we can
+		// extract the VERDICT marker and write decision.json ourselves.
+		captureOutput: vc.RoleName == "reviewer",
 	}
 	conn := acp.NewClientSideConnection(client, acpStdin, acpStdout)
 	defer conn.Close()
@@ -599,6 +683,20 @@ func runWorkerACPSession(ctx context.Context, vc *config.VesselConfig, legionMod
 	acpPromptSpan.SetStatus(codes.Ok, "")
 	acpPromptSpan.End()
 	slog.InfoContext(ctx, "prompt complete", "stop_reason", stopReason)
+
+	// For the reviewer role (inquisitor agent): extract the VERDICT marker from
+	// the accumulated ACP output and write decision.json before the pre-commit
+	// hook reads it.  This replaces the previous approach of having the agent
+	// write the file itself via file tools, which was unreliable.
+	if vc.RoleName == "reviewer" {
+		client.mu.Lock()
+		acpOutput := client.output.String()
+		client.mu.Unlock()
+
+		if err := extractAndWriteDecision(ctx, acpOutput, vc.WorkspaceDir); err != nil {
+			return err
+		}
+	}
 
 	// Write success result for the post-run hook to consume.
 	writeResult(vc.WorkspaceDir, vesselResult{
