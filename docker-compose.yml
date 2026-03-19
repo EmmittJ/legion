@@ -44,6 +44,11 @@ services:
     build:
       context: .
       dockerfile: cmd/archon/Dockerfile
+    labels:
+      # Static labels baked onto the Archon container so Promtail and Grafana can
+      # classify and filter logs without relying on container-name parsing alone.
+      - "legion.role=archon"
+      - "legion.component=core"
     environment:
       - REPO_URL=${REPO_URL}
       - VESSEL_IMAGE=${VESSEL_IMAGE:-legion/vessel-copilot:latest}
@@ -113,12 +118,23 @@ services:
       - legion-net
 
   promtail:
-    image: grafana/promtail:2.9.10
+    image: grafana/promtail:latest
+    # NOTE: grafana/promtail:2.9.10 uses Docker API v1.42 which is rejected by Docker Engine
+    # requiring minimum v1.44. Pinned to latest (Promtail 3.x) so the Docker SD job works.
+    # If you need a pinned version, use 3.0.0 or higher.
     command: ["-config.file=/etc/promtail/config.yaml"]
     volumes:
       - ./observability/promtail.yaml:/etc/promtail/config.yaml:ro
       # Docker socket — read-only; Promtail uses the Docker API to read container logs
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Docker JSON log files — fallback path for ephemeral vessel containers.
+      # Vessel containers are removed by Archon before Docker SD can flush tail-end
+      # logs; mounting this directory lets the docker-json-files job read the files
+      # directly, which persist briefly after container removal.
+      # NOTE: on Linux the host path is /var/lib/docker/containers; on Docker Desktop
+      # (Mac/Windows) the files live inside the VM — this mount will be empty but
+      # harmless. Primary log capture on non-Linux still works via the Docker SD job.
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
     depends_on:
       - loki
     networks:

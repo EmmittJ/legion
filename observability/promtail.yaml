@@ -9,10 +9,15 @@ clients:
   - url: http://loki:3100/loki/api/v1/push
 
 scrape_configs:
+  # Job 1: Docker SD — discovers running containers via Docker API.
+  # Fast vessel discovery; 2s refresh catches new containers quickly.
+  # Limitation: once a container is removed (Archon calls removeContainer),
+  # it disappears from Docker API immediately and any buffered tail-end logs
+  # that haven't been scraped yet are lost.
   - job_name: containers
     docker_sd_configs:
       - host: unix:///var/run/docker.sock
-        refresh_interval: 5s
+        refresh_interval: 2s
 
     relabel_configs:
       # Strip the leading slash Docker adds to container names: /legion-archon-1 → legion-archon-1
@@ -48,5 +53,79 @@ scrape_configs:
             msg: msg
 
       # Promote extracted "level" to an index label so log-level queries are fast
+      - labels:
+          level:
+
+  # Job 2: Docker JSON log files — fallback for ephemeral vessel containers.
+  # Vessel containers live ~7 min and can be removed by Archon before Docker SD
+  # flushes buffered lines. Docker's json-file log driver writes to
+  # /var/lib/docker/containers/<id>/<id>-json.log and these files persist briefly
+  # after container removal, giving this job a chance to catch tail-end logs.
+  #
+  # Each log line written by the json-file driver is a JSON envelope:
+  #   {"log":"<raw line>\n","stream":"stdout","time":"<rfc3339nano>"}
+  # The pipeline below unwraps that envelope so the stored log entry is the inner
+  # "log" value, not the double-encoded wrapper.
+  #
+  # IMPORTANT: /var/lib/docker/containers must be bind-mounted into the Promtail
+  # container (see docker-compose.yml promtail.volumes).
+  - job_name: docker-json-files
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: docker-json-files
+          __path__: /var/lib/docker/containers/*/*-json.log
+
+    pipeline_stages:
+      # The Docker json-file log driver wraps each line in:
+      #   {"log":"<content>\n","stream":"stdout","time":"<rfc3339nano>"}
+      # Extract the inner fields first.
+      - json:
+          expressions:
+            output: log
+            stream: stream
+            timestamp: time
+
+      # Set the stream timestamp from the Docker-recorded time field.
+      # MUST happen before the drop stage: older_than compares against the
+      # stream timestamp, not wall-clock ingestion time. Without this stage
+      # the timestamp defaults to now() and older_than would drop everything.
+      - timestamp:
+          source: timestamp
+          format: RFC3339Nano
+
+      # Drop lines older than 1h — prevents replaying all historical container
+      # log files on Promtail startup or when new files are first discovered.
+      # This is the fix for the Loki ingestion rate-limit flood.
+      - drop:
+          older_than: 1h
+          drop_counter_reason: too_old
+
+      # Replace the log line with the inner "log" value (strip the wrapper).
+      - output:
+          source: output
+
+      # Promote stream (stdout/stderr) as a label for parity with Job 1.
+      - labels:
+          stream:
+
+      # Extract the container ID from the file path:
+      #   /var/lib/docker/containers/<id>/<id>-json.log → <id>
+      - regex:
+          expression: '/var/lib/docker/containers/(?P<container_id>[^/]+)/[^/]+-json\.log'
+          source: filename
+
+      # Promote container_id so downstream queries can correlate with Docker SD.
+      - labels:
+          container_id:
+
+      # Now attempt JSON parse on the unwrapped log line (archon / vessel-driver
+      # emit slog JSON; infra services emit plain text — both paths are fine here).
+      - json:
+          expressions:
+            level: level
+            msg: msg
+
       - labels:
           level:
