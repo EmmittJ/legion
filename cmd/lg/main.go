@@ -830,16 +830,22 @@ func checkGitHubToken() doctorResult {
 	}
 
 	scopes := resp.Header.Get("X-OAuth-Scopes")
+	// Build an exact-match set from the comma-space-separated header value so
+	// that e.g. "public_repo" does not satisfy the "repo" requirement.
+	scopeSet := make(map[string]bool)
+	for _, s := range strings.Split(scopes, ",") {
+		scopeSet[strings.TrimSpace(s)] = true
+	}
 	required := []string{"repo", "workflow"}
 	var missing []string
 	for _, s := range required {
-		if !strings.Contains(scopes, s) {
+		if !scopeSet[s] {
 			missing = append(missing, s)
 		}
 	}
 	// pull_requests:write is covered by the "repo" scope on classic tokens, but
 	// also accept explicit "pull_requests:write" for fine-grained tokens.
-	hasPR := strings.Contains(scopes, "repo") || strings.Contains(scopes, "pull_requests:write")
+	hasPR := scopeSet["repo"] || scopeSet["pull_requests:write"]
 	if !hasPR {
 		missing = append(missing, "pull_requests:write")
 	}
