@@ -5,7 +5,10 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -44,6 +47,8 @@ func main() {
 		cmdLog()
 	case "watch":
 		cmdWatch()
+	case "doctor":
+		cmdDoctor()
 	default:
 		fmt.Fprintf(os.Stderr, "lg: unknown command %q\n\n", os.Args[1])
 		printUsage()
@@ -61,6 +66,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  lg log <issue-id> [--follow]            — print ACP execution traces for an issue;")
 	fmt.Fprintln(os.Stderr, "                                           --follow polls every 2s and tails new lines")
 	fmt.Fprintln(os.Stderr, "  lg watch [--interval=N]                 — live-refreshing status dashboard (default: 3s)")
+	fmt.Fprintln(os.Stderr, "  lg doctor                               — validate the full Legion stack")
 }
 
 // ── cmdInit ───────────────────────────────────────────────────────────────────
@@ -649,8 +655,365 @@ func cmdWatch() {
 	}
 }
 
-// gitRoot returns the absolute path to the repository root by running
-// git rev-parse --show-toplevel.
+// ── cmdDoctor ─────────────────────────────────────────────────────────────────
+
+// doctorStatus is the outcome of a single health check.
+type doctorStatus int
+
+const (
+	doctorPass doctorStatus = iota
+	doctorWarn
+	doctorFail
+)
+
+// doctorResult holds the outcome of one check.
+type doctorResult struct {
+	name   string
+	status doctorStatus
+	detail string // one-line detail shown after the check name
+	hint   string // actionable fix hint — printed only on warn/fail
+}
+
+// cmdDoctor validates the full Legion stack and prints a flutter-doctor-style
+// report with colored pass/fail/warn indicators per check plus a summary line.
+//
+//	lg doctor
+func cmdDoctor() {
+	// ANSI colour helpers (reset automatically after each use).
+	green := func(s string) string { return "\033[32m" + s + "\033[0m" }
+	yellow := func(s string) string { return "\033[33m" + s + "\033[0m" }
+	red := func(s string) string { return "\033[31m" + s + "\033[0m" }
+
+	icon := func(s doctorStatus) string {
+		switch s {
+		case doctorPass:
+			return green("✓")
+		case doctorWarn:
+			return yellow("⚠")
+		default:
+			return red("✗")
+		}
+	}
+
+	var results []doctorResult
+
+	// ── 1. Docker daemon ──────────────────────────────────────────────────────
+	results = append(results, checkDockerDaemon())
+
+	// ── 2. GH_TOKEN / GITHUB_TOKEN scopes ────────────────────────────────────
+	results = append(results, checkGitHubToken())
+
+	// ── 3. Dolt reachable (127.0.0.1:3306) ───────────────────────────────────
+	results = append(results, checkDolt())
+
+	// ── 4. Archon container running ───────────────────────────────────────────
+	results = append(results, checkArchon())
+
+	// ── 5. Vessel image present and not stale ────────────────────────────────
+	results = append(results, checkVesselImage())
+
+	// ── 6. bd CLI installed and configured ───────────────────────────────────
+	results = append(results, checkBd())
+
+	// ── 7. git identity set ───────────────────────────────────────────────────
+	results = append(results, checkGitIdentity())
+
+	// ── Print report ──────────────────────────────────────────────────────────
+	fmt.Println()
+	fmt.Println("Legion Doctor")
+	fmt.Println(strings.Repeat("─", 50))
+
+	pass, warn, fail := 0, 0, 0
+	for _, r := range results {
+		switch r.status {
+		case doctorPass:
+			pass++
+		case doctorWarn:
+			warn++
+		case doctorFail:
+			fail++
+		}
+
+		line := fmt.Sprintf("  %s  %s", icon(r.status), r.name)
+		if r.detail != "" {
+			line += "  — " + r.detail
+		}
+		fmt.Println(line)
+
+		if r.hint != "" && r.status != doctorPass {
+			for _, h := range strings.Split(r.hint, "\n") {
+				fmt.Printf("       %s\n", h)
+			}
+		}
+	}
+
+	fmt.Println(strings.Repeat("─", 50))
+	summary := fmt.Sprintf("  %d passed", pass)
+	if warn > 0 {
+		summary += fmt.Sprintf(", %d warning(s)", warn)
+	}
+	if fail > 0 {
+		summary += fmt.Sprintf(", %d failed", fail)
+	}
+
+	switch {
+	case fail > 0:
+		fmt.Println(red(summary))
+	case warn > 0:
+		fmt.Println(yellow(summary))
+	default:
+		fmt.Println(green(summary))
+	}
+	fmt.Println()
+
+	if fail > 0 {
+		os.Exit(1)
+	}
+}
+
+// checkDockerDaemon verifies the Docker daemon is reachable.
+func checkDockerDaemon() doctorResult {
+	r := doctorResult{name: "Docker daemon"}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "info", "--format", "{{.ServerVersion}}")
+	out, err := cmd.Output()
+	if err != nil {
+		r.status = doctorFail
+		r.detail = "not reachable"
+		r.hint = "Start Docker Desktop or run: sudo systemctl start docker"
+		return r
+	}
+	r.status = doctorPass
+	r.detail = "version " + strings.TrimSpace(string(out))
+	return r
+}
+
+// checkGitHubToken verifies GH_TOKEN / GITHUB_TOKEN is set and has the
+// required scopes: repo, workflow, and write:discussion (covers pull_requests:write).
+func checkGitHubToken() doctorResult {
+	r := doctorResult{name: "GitHub token (GH_TOKEN / GITHUB_TOKEN)"}
+
+	token := os.Getenv("GH_TOKEN")
+	if token == "" {
+		token = os.Getenv("GITHUB_TOKEN")
+	}
+	if token == "" {
+		r.status = doctorFail
+		r.detail = "not set"
+		r.hint = "Set GH_TOKEN or GITHUB_TOKEN to a personal access token with repo, workflow, and pull_requests:write scopes.\n" +
+			"Create one at: https://github.com/settings/tokens"
+		return r
+	}
+
+	// Call GitHub API to validate and inspect scopes.
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://api.github.com/user", nil)
+	req.Header.Set("Authorization", "token "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		r.status = doctorWarn
+		r.detail = "token set but GitHub API unreachable"
+		r.hint = "Check your network connection."
+		return r
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		r.status = doctorFail
+		r.detail = "token is invalid or expired"
+		r.hint = "Regenerate your GitHub token at: https://github.com/settings/tokens"
+		return r
+	}
+
+	scopes := resp.Header.Get("X-OAuth-Scopes")
+	// Build an exact-match set from the comma-space-separated header value so
+	// that e.g. "public_repo" does not satisfy the "repo" requirement.
+	scopeSet := make(map[string]bool)
+	for _, s := range strings.Split(scopes, ",") {
+		scopeSet[strings.TrimSpace(s)] = true
+	}
+	required := []string{"repo", "workflow"}
+	var missing []string
+	for _, s := range required {
+		if !scopeSet[s] {
+			missing = append(missing, s)
+		}
+	}
+	// pull_requests:write is covered by the "repo" scope on classic tokens, but
+	// also accept explicit "pull_requests:write" for fine-grained tokens.
+	hasPR := scopeSet["repo"] || scopeSet["pull_requests:write"]
+	if !hasPR {
+		missing = append(missing, "pull_requests:write")
+	}
+
+	if len(missing) > 0 {
+		r.status = doctorFail
+		r.detail = fmt.Sprintf("missing scopes: %s (have: %s)", strings.Join(missing, ", "), scopes)
+		r.hint = "Regenerate your token with the required scopes: repo, workflow, pull_requests:write\n" +
+			"https://github.com/settings/tokens"
+		return r
+	}
+
+	r.status = doctorPass
+	r.detail = "scopes OK"
+	return r
+}
+
+// checkDolt verifies the Dolt SQL server is reachable at 127.0.0.1:3306.
+func checkDolt() doctorResult {
+	r := doctorResult{name: "Dolt SQL server (127.0.0.1:3306)"}
+	conn, err := net.DialTimeout("tcp", "127.0.0.1:3306", 3*time.Second)
+	if err != nil {
+		r.status = doctorFail
+		r.detail = "not reachable"
+		r.hint = "Start the Legion stack: docker compose up -d dolt\n" +
+			"Or check that the dolt container is healthy: docker compose ps dolt"
+		return r
+	}
+	_ = conn.Close()
+	r.status = doctorPass
+	r.detail = "reachable"
+	return r
+}
+
+// checkArchon verifies the archon container is running.
+func checkArchon() doctorResult {
+	r := doctorResult{name: "Archon container"}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx,
+		"docker", "ps", "--filter", "name=archon", "--format", "{{.Names}}").Output()
+	if err != nil {
+		r.status = doctorFail
+		r.detail = "docker ps failed"
+		r.hint = "Ensure Docker is running and you have permission to access the socket."
+		return r
+	}
+	names := strings.TrimSpace(string(out))
+	if names == "" {
+		r.status = doctorFail
+		r.detail = "not running"
+		r.hint = "Start the Legion stack: docker compose up -d archon\n" +
+			"Or check logs: docker compose logs archon"
+		return r
+	}
+	r.status = doctorPass
+	r.detail = names
+	return r
+}
+
+// checkVesselImage verifies the vessel image is present and warns if stale
+// (older than 30 days).
+func checkVesselImage() doctorResult {
+	image := os.Getenv("VESSEL_IMAGE")
+	if image == "" {
+		image = "legion/vessel-copilot:latest"
+	}
+	r := doctorResult{name: fmt.Sprintf("Vessel image (%s)", image)}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// docker image inspect returns a JSON array; we read the CreatedAt field.
+	out, err := exec.CommandContext(ctx,
+		"docker", "image", "inspect", image, "--format", "{{.Created}}").Output()
+	if err != nil {
+		r.status = doctorFail
+		r.detail = "image not found"
+		r.hint = fmt.Sprintf("Build the vessel image: docker compose build\n"+
+			"Or pull it if it is hosted: docker pull %s", image)
+		return r
+	}
+
+	created := strings.TrimSpace(string(out))
+	t, err := time.Parse(time.RFC3339Nano, created)
+	if err != nil {
+		// Fallback: present but can't parse date.
+		r.status = doctorPass
+		r.detail = "present"
+		return r
+	}
+
+	age := time.Since(t)
+	if age > 30*24*time.Hour {
+		r.status = doctorWarn
+		r.detail = fmt.Sprintf("present but %.0f days old — consider rebuilding", age.Hours()/24)
+		r.hint = "Rebuild: docker compose build"
+		return r
+	}
+
+	r.status = doctorPass
+	r.detail = fmt.Sprintf("present (built %.0f days ago)", age.Hours()/24)
+	return r
+}
+
+// checkBd verifies the bd CLI is installed and can talk to the database.
+func checkBd() doctorResult {
+	r := doctorResult{name: "bd CLI"}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "bd", "--version").Output()
+	if err != nil {
+		r.status = doctorFail
+		r.detail = "not found"
+		r.hint = "Install bd: see https://github.com/EmmittJ/beads for installation instructions.\n" +
+			"Ensure it is in your PATH."
+		return r
+	}
+	ver := strings.TrimSpace(string(out))
+
+	// Quick sanity check: can we list issues?
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel2()
+	if _, dbErr := exec.CommandContext(ctx2, "bd", "status").Output(); dbErr != nil {
+		r.status = doctorWarn
+		r.detail = fmt.Sprintf("%s — installed but database unreachable", ver)
+		r.hint = "Run: bd init\nOr ensure the Dolt server is running (see Dolt check above)."
+		return r
+	}
+
+	r.status = doctorPass
+	r.detail = ver
+	return r
+}
+
+// checkGitIdentity verifies that git user.name and user.email are configured.
+func checkGitIdentity() doctorResult {
+	r := doctorResult{name: "git identity"}
+
+	nameOut, nameErr := exec.Command("git", "config", "user.name").Output()
+	emailOut, emailErr := exec.Command("git", "config", "user.email").Output()
+
+	name := strings.TrimSpace(string(nameOut))
+	email := strings.TrimSpace(string(emailOut))
+
+	switch {
+	case (nameErr != nil || name == "") && (emailErr != nil || email == ""):
+		r.status = doctorFail
+		r.detail = "user.name and user.email not set"
+		r.hint = `Set your git identity:
+  git config --global user.name "Your Name"
+  git config --global user.email "you@example.com"`
+	case nameErr != nil || name == "":
+		r.status = doctorFail
+		r.detail = "user.name not set"
+		r.hint = `git config --global user.name "Your Name"`
+	case emailErr != nil || email == "":
+		r.status = doctorFail
+		r.detail = "user.email not set"
+		r.hint = `git config --global user.email "you@example.com"`
+	default:
+		r.status = doctorPass
+		r.detail = fmt.Sprintf("%s <%s>", name, email)
+	}
+	return r
+}
+
+// gitRoot returns the absolute path to the repository root by running git rev-parse --show-toplevel.
 func gitRoot() (string, error) {
 	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
 	if err != nil {
