@@ -26,6 +26,7 @@ package main
 // writeResult is defined in main.go (same package) and is called by fatalFail.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -171,15 +172,28 @@ func enrichedEnv(base []string, status, errorMsg string) []string {
 // ─── Hook execution ──────────────────────────────────────────────────────────
 
 // runHook executes a single hook script as a subprocess with the provided env.
-// stdout and stderr are forwarded to the container's stdout/stderr.
+// stdout and stderr are captured into a buffer and emitted via slog so they
+// appear as structured fields in Grafana logs (Promtail's | json pipeline picks
+// them up). Output is logged at DEBUG on success and ERROR on failure. On
+// failure the subprocess output is also included in the returned error so that
+// fatalFail() surfaces the actual gh/git text, not just "exit status 1".
 func runHook(ctx context.Context, path string, env []string) error {
 	cmd := exec.CommandContext(ctx, path)
 	cmd.Env = env
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
 	slog.InfoContext(ctx, "dispatch: running hook", "path", path)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("hook %s: %w", filepath.Base(path), err)
+	err := cmd.Run()
+	output := strings.TrimSpace(buf.String())
+	if err != nil {
+		slog.ErrorContext(ctx, "dispatch: hook failed",
+			"path", filepath.Base(path), "output", output, "err", err)
+		return fmt.Errorf("hook %s: %w\noutput: %s", filepath.Base(path), err, output)
+	}
+	if output != "" {
+		slog.DebugContext(ctx, "dispatch: hook output",
+			"path", filepath.Base(path), "output", output)
 	}
 	return nil
 }
