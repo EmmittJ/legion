@@ -548,6 +548,21 @@ func applyDefaultRole(ctx context.Context, defaultRole, issueID string) {
 	}
 }
 
+// fetchIssueRole queries Beads for the current role label on an issue.
+// Returns "" when the call fails or no role:* label is present.
+// Used by watchHermes to emit a structured "role assigned" log after Hermes exits.
+func fetchIssueRole(issueID string) string {
+	out, err := run("bd", "show", issueID, "--json")
+	if err != nil {
+		return ""
+	}
+	var iss issueItem
+	if jerr := json.Unmarshal([]byte(strings.TrimSpace(string(out))), &iss); jerr != nil {
+		return ""
+	}
+	return roleLabel(iss.Labels)
+}
+
 // removeLabel removes a label from an issue in Beads. Best-effort: logs on
 // failure but never crashes Archon.
 func removeLabel(ctx context.Context, label, issueID string) {
@@ -591,7 +606,7 @@ func markBlockedWithLabel(ctx context.Context, issueID, label string) {
 func createReviewBead(ctx context.Context, issueID, issueTitle, originalIssueID string, reworkCount int) {
 	labels := fmt.Sprintf("role:reviewer,discovered-from:%s,review-branch:vessel/%s,review-rework-count:%d,original-issue:%s,dispatch:auto",
 		issueID, issueID, reworkCount, originalIssueID)
-	_, err := run("bd", "create",
+	out, err := run("bd", "create",
 		"Review: "+issueTitle,
 		"--description=Review output of vessel "+issueID+". Branch: vessel/"+issueID+".",
 		"--labels", labels,
@@ -601,7 +616,14 @@ func createReviewBead(ctx context.Context, issueID, issueTitle, originalIssueID 
 	)
 	if err != nil {
 		slog.ErrorContext(ctx, "creating review bead", "issue_id", issueID, "err", err)
+		return
 	}
+	var created issueItem
+	reviewID := ""
+	if jerr := json.Unmarshal([]byte(strings.TrimSpace(string(out))), &created); jerr == nil {
+		reviewID = created.ID
+	}
+	slog.InfoContext(ctx, "review bead created", "issue_id", issueID, "review_id", reviewID)
 }
 
 func spawnVessel(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, issueID, name, roleName, agentName, issueTitle, issueDescription, issueAC string, labels []string, o *obs) error {
@@ -893,6 +915,7 @@ func pulse(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *trac
 			logger.ErrorContext(ctx, "claim issue (skipping)", "issue_id", iss.ID, "err", err)
 			continue
 		}
+		logger.InfoContext(ctx, "issue assigned", "issue_id", iss.ID, "role", roleName, "agent", agent)
 		if err := spawnVessel(ctx, cfg, acfg, iss.ID, name, roleName, agent, iss.Title, iss.Description, iss.AcceptanceCriteria, iss.Labels, o); err != nil {
 			logger.ErrorContext(ctx, "spawning vessel", "issue_id", iss.ID, "err", err)
 			markError(ctx, iss.ID, fmt.Sprintf("spawn failed: %v", err))
@@ -955,6 +978,7 @@ func watch(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *trac
 			))
 			o.vesselDuration.Record(ctx, time.Since(e.startedAt).Seconds())
 			markDone(ctx, e.issueID)
+			logger.InfoContext(ctx, "issue closed", "issue_id", e.issueID, "container", name)
 			if acfg.Review.Enabled && e.issueTitle != "" && e.roleName == "worker" {
 				original := e.originalIssueID
 				if original == "" {
@@ -976,6 +1000,7 @@ func watch(ctx context.Context, cfg config, acfg archoncfg.ArchonConfig, t *trac
 			))
 			o.vesselDuration.Record(ctx, time.Since(e.startedAt).Seconds())
 			markBlockedWithLabel(ctx, e.issueID, label)
+			logger.WarnContext(ctx, "issue blocked", "issue_id", e.issueID, "container", name, "exit_code", state.ExitCode, "label", label)
 			removeContainer(ctx, name)
 			t.remove(name)
 			delete(lastHeartbeat, name)
@@ -1067,6 +1092,8 @@ func watchHermes(ctx context.Context, acfg archoncfg.ArchonConfig, ht *tracker) 
 			// already removed it, but prevents permanent stall if it did not.
 			slog.InfoContext(ctx, "hermes exited cleanly", "container", name, "issue_id", e.issueID)
 			removeLabel(ctx, "hermes:classifying", e.issueID)
+			role := fetchIssueRole(e.issueID)
+			slog.InfoContext(ctx, "role assigned", "issue_id", e.issueID, "role", role)
 			removeContainer(ctx, name)
 			ht.remove(name)
 
