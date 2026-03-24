@@ -10,21 +10,20 @@ Legion is an autonomous coding agent system. You file an issue; Legion works it.
 |---|---|---|
 | **`archon`** | Pulse loop: polls Beads for `ready` issues, spawns vessel containers. Watcher loop: detects exits, marks issues `closed` or `failed`. | Beads (via `bd`), Docker socket |
 | **`vessel-driver`** | Runs inside the vessel container. Reads the issue from Beads, starts a Copilot ACP session over stdio, drives the agent, writes traces back to Beads, pushes the branch. | Beads (via `bd`), Copilot CLI (ACP/stdio), Git |
-| **`lg`** | Operator CLI. Three commands: create issues, watch status, read traces. Shells out to `bd`. | Beads (via `bd`) |
 
 ```
-Operator          lg CLI               Beads (Dolt)          Archon
-   │                │                       │                   │
-   ├─ lg invoke ───►├─ bd create ──────────►│                   │
-   │                │                       │◄── pulse (5s) ────┤
-   │                │                       │                   ├─ docker run vessel
-   │                │                       │                   │       │
-   │                │                       │◄── bd show ───────┼── vessel-driver
-   │                │                       │◄── bd trace ──────┤       │
-   │                │                       │◄── bd close ──────┼───────┤
-   │                │                       │                   │◄── watcher (10s)
-   ├─ lg status ───►├─ bd list ────────────►│                   │
-   ├─ lg log <id> ──►├─ bd show ────────────►│                   │
+Operator           Beads (Dolt)          Archon
+   │                   │                   │
+   ├─ bd create ──────►│                   │
+   │                   │◄── pulse (5s) ────┤
+   │                   │                   ├─ docker run vessel
+   │                   │                   │       │
+   │                   │◄── bd show ───────┼── vessel-driver
+   │                   │◄── bd trace ──────┤       │
+   │                   │◄── bd close ──────┼───────┤
+   │                   │                   │◄── watcher (10s)
+   ├─ bd list ────────►│                   │
+   ├─ bd show ────────►│                   │
 ```
 
 ---
@@ -52,17 +51,17 @@ GITHUB_TOKEN=ghp_xxx \
 docker compose up -d
 
 # 2. File a task — Archon picks it up automatically
-lg invoke "Add a health check endpoint to the API server"
+bd create "Add a health check endpoint to the API server" --type=task
 # Created issue: legion-4ab
 
 # 3. Watch it work
-lg status
+bd list
 # ID          TITLE                                        STATUS       ASSIGNED_TO
 # ──          ─────                                        ──────       ───────────
 # legion-4ab  Add a health check endpoint to the API...   in_progress  wraith
 
 # 4. Read the vessel's trace when it's done
-lg log legion-4ab
+bd show legion-4ab
 # Issue: legion-4ab — Add a health check endpoint to the API server [closed]
 # Traces (12):
 #   [1] 2025-01-15T14:23:01Z  Starting ACP session
@@ -97,10 +96,9 @@ All configuration is passed as environment variables to `docker compose`.
 **Requirements:** Go 1.21+, Docker.
 
 ```bash
-# Build all three binaries (host OS)
+# Build the two binaries (host OS)
 go build -o archon.exe        ./cmd/archon
 go build -o vessel-driver.exe ./cmd/vessel-driver
-go build -o lg.exe            ./cmd/lg
 
 # Build the vessel image
 # vessel-driver must be built as a Linux binary first
@@ -110,8 +108,6 @@ docker build -f Dockerfile.vessel-copilot -t legion/vessel-copilot:latest .
 # Build the Archon service image (used by docker compose)
 docker compose build
 ```
-
-`lg` can be run directly from the host — it only needs `bd` on `PATH`.
 
 ---
 
