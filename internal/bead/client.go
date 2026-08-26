@@ -217,3 +217,16 @@ func (c *Client) DoltPush(ctx context.Context) error {
 	end(span, err)
 	return err
 }
+
+// Bootstrap prepares a fresh environment (e.g. a vessel container) to use
+// Beads: init a local database, point it at the git remote, and pull
+// current state. Init and remote-add failures are tolerated so Bootstrap
+// is idempotent; pull failures are not.
+func (c *Client) Bootstrap(ctx context.Context, remoteURL string) error {
+	ctx, span := c.span(ctx, "bootstrap", "")
+	_, _ = c.run(ctx, c.dir, "init")
+	_, _ = c.run(ctx, c.dir, "dolt", "remote", "add", "origin", remoteURL)
+	_, err := c.run(ctx, c.dir, "dolt", "pull")
+	end(span, err)
+	return err
+}
