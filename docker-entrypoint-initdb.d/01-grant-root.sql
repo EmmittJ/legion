@@ -1,1 +1,0 @@
-CREATE USER IF NOT EXISTS 'root'@'%'; GRANT ALL ON *.* TO 'root'@'%'; FLUSH PRIVILEGES;
