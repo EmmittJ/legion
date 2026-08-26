@@ -18,9 +18,3 @@
 # Editor
 .vscode/
 .idea/
-
-# bd-generated harness configs (regenerate with `bd setup`)
-.agents/
-.claude/
-.codex/
-CLAUDE.md
