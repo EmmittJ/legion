@@ -202,3 +202,31 @@ func TestSummonErrorFailsBead(t *testing.T) {
 		t.Error("summon failure should fail the bead")
 	}
 }
+
+type syncingBeads struct {
+	*fakeBeads
+	pulls, pushes int
+}
+
+func (s *syncingBeads) DoltPull(context.Context) error { s.pulls++; return nil }
+func (s *syncingBeads) DoltPush(context.Context) error { s.pushes++; return nil }
+
+func TestSyncPullsAndPushesAroundTick(t *testing.T) {
+	beads := &syncingBeads{fakeBeads: newFakeBeads()}
+	r := &Reconciler{Beads: beads, Vessels: newFakeVessels(), Config: testConfig(), Sync: true}
+	if err := r.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if beads.pulls != 1 || beads.pushes != 1 {
+		t.Errorf("pulls=%d pushes=%d, want 1/1", beads.pulls, beads.pushes)
+	}
+
+	// Sync off: no dolt traffic.
+	r.Sync = false
+	if err := r.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if beads.pulls != 1 || beads.pushes != 1 {
+		t.Errorf("sync=false still synced: pulls=%d pushes=%d", beads.pulls, beads.pushes)
+	}
+}

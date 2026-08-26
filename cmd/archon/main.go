@@ -30,6 +30,7 @@ func main() {
 
 func run() error {
 	configPath := flag.String("config", "", "path to .legion/config.toml (default: search upward from cwd)")
+	syncFlag := flag.Bool("sync", false, "pull/push the Beads Dolt remote every tick (for containerized runs)")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -62,8 +63,18 @@ func run() error {
 		return err
 	}
 	// The Beads database lives in the operating repo, two levels up from
-	// .legion/config.toml.
+	// .legion/config.toml. Without one (fresh container), bootstrap a
+	// local copy from the Dolt remote and sync every tick.
 	repoRoot := filepath.Dir(filepath.Dir(path))
+	beads := bead.New(bead.WithDir(repoRoot))
+	sync := *syncFlag
+	if _, err := os.Stat(filepath.Join(repoRoot, ".beads")); os.IsNotExist(err) {
+		slog.Info("no local beads database; bootstrapping from remote", "remote", cfg.RepoURL)
+		if err := beads.Bootstrap(ctx, cfg.RepoURL); err != nil {
+			return fmt.Errorf("bootstrap beads: %w", err)
+		}
+		sync = true
+	}
 
 	vessels, err := vessel.New(ctx)
 	if err != nil {
@@ -79,10 +90,11 @@ func run() error {
 	}
 
 	r := &archon.Reconciler{
-		Beads:   bead.New(bead.WithDir(repoRoot)),
+		Beads:   beads,
 		Vessels: vessels,
 		Config:  cfg,
 		Env:     env,
+		Sync:    sync,
 	}
 	err = r.Run(ctx)
 	if err == context.Canceled {

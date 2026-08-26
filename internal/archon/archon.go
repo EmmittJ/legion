@@ -42,6 +42,15 @@ type vesselPool interface {
 	Reap(ctx context.Context, id string) error
 }
 
+// beadSyncer is optionally implemented by the bead store. When the
+// Reconciler runs with Sync (its own Beads copy, e.g. in a container),
+// it pulls before and pushes after each tick so it converges with beads
+// filed elsewhere. *bead.Client implements it.
+type beadSyncer interface {
+	DoltPull(ctx context.Context) error
+	DoltPush(ctx context.Context) error
+}
+
 // Reconciler drives the summon/reap loop.
 type Reconciler struct {
 	Beads   beadStore
@@ -50,6 +59,9 @@ type Reconciler struct {
 	// Env is merged into every summoned vessel's environment
 	// (repo URL, tokens, OTLP endpoint, …).
 	Env map[string]string
+	// Sync makes each tick pull/push the Beads Dolt remote. Enable when
+	// this Archon's beads copy is not the operator's (containerized runs).
+	Sync bool
 }
 
 func tracer() trace.Tracer { return otel.Tracer("legion/internal/archon") }
@@ -59,6 +71,19 @@ func tracer() trace.Tracer { return otel.Tracer("legion/internal/archon") }
 func (r *Reconciler) Tick(ctx context.Context) error {
 	ctx, span := tracer().Start(ctx, "archon.reconcile")
 	defer span.End()
+
+	if r.Sync {
+		if s, ok := r.Beads.(beadSyncer); ok {
+			if err := s.DoltPull(ctx); err != nil {
+				slog.WarnContext(ctx, "dolt pull failed; reconciling stale view", "error", err)
+			}
+			defer func() {
+				if err := s.DoltPush(ctx); err != nil {
+					slog.WarnContext(ctx, "dolt push failed; will retry next tick", "error", err)
+				}
+			}()
+		}
+	}
 
 	vessels, err := r.Vessels.List(ctx)
 	if err != nil {

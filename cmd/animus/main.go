@@ -62,7 +62,13 @@ func run() error {
 		return animus.MCPServer(beads, beadID).Run(ctx, &mcp.StdioTransport{})
 	}
 
-	// Possession mode: the vessel entrypoint.
+	// Possession mode: the vessel entrypoint. Validate the env contract
+	// before touching the network.
+	for _, key := range []string{animus.EnvBeadID, animus.EnvRepoURL, animus.EnvHarnessCmd} {
+		if os.Getenv(key) == "" {
+			return fmt.Errorf("%s must be set (see docs/architecture.md env contract)", key)
+		}
+	}
 	if err := beads.Bootstrap(ctx, os.Getenv(animus.EnvRepoURL)); err != nil {
 		return fmt.Errorf("beads bootstrap: %w", err)
 	}
