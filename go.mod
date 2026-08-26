@@ -3,6 +3,7 @@ module github.com/EmmittJ/legion
 go 1.26.7
 
 require (
+	github.com/coder/acp-go-sdk v0.13.5
 	github.com/docker/go-sdk/client v0.1.0-alpha013
 	github.com/docker/go-sdk/container v0.1.0-alpha016
 	github.com/moby/moby/api v1.52.0
