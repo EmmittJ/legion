@@ -44,6 +44,7 @@ jobs:
           tags: legion/vessel-copilot:latest
           load: true
           cache-from: type=gha
+          cache-to: type=gha,mode=max
       - name: Build archon
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
@@ -52,3 +53,4 @@ jobs:
           tags: legion/archon:latest
           load: true
           cache-from: type=gha
+          cache-to: type=gha,mode=max
