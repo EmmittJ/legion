@@ -1,29 +1,20 @@
-
-# Dolt database files (added by bd init)
-.dolt/
-*.db
-
-# Compiled Windows binaries
+# Binaries
+/bin/
 *.exe
 
-# Compiled Go binaries
-/vessel-driver
+# Go
+*.test
+*.out
+/vendor/
 
-# Local environment — contains secrets; never commit
+# Beads local database (embedded Dolt)
+.beads/dolt/
+.beads/*.db
+.beads/backup/
+
+# Env
 .env
 
-# Logs (local-only, can be large and not useful to track)
-*.log
-
-# IDE workspace files
-legion.code-workspace
-.legion/context/
-
-# Vessel runtime files — written by pre-run.sh and vessel-driver at container runtime;
-# must never be committed to the branch by post-run.sh's git add -A.
-.legion/context.json
-.legion/issue.json
-.legion/decision.json
-.legion/review_context.md
-.legion/review_state.json
-result.json
+# Editor
+.vscode/
+.idea/

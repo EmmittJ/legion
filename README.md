@@ -1,151 +1,112 @@
 # Legion
 
-Legion is an autonomous coding agent system. You file an issue; Legion works it. Archon polls [Beads](https://github.com/steveyegge/beads) for ready issues, spawns a Docker vessel container for each one, and the vessel runs GitHub Copilot CLI via the ACP JSON-RPC protocol. The vessel clones your repo, checks out a `legion/<issue-id>` branch, drives Copilot to implement the task, pushes the branch, and closes the issue. You review and merge.
+**File a bead; Legion works it.**
 
----
-
-## Architecture
-
-| Binary | Role | Connects to |
-|---|---|---|
-| **`archon`** | Pulse loop: polls Beads for `ready` issues, spawns vessel containers. Watcher loop: detects exits, marks issues `closed` or `failed`. | Beads (via `bd`), Docker socket |
-| **`vessel-driver`** | Runs inside the vessel container. Reads the issue from Beads, starts a Copilot ACP session over stdio, drives the agent, writes traces back to Beads, pushes the branch. | Beads (via `bd`), Copilot CLI (ACP/stdio), Git |
-| **`lg`** | Operator CLI. Three commands: create issues, watch status, read traces. Shells out to `bd`. | Beads (via `bd`) |
+Legion turns tracked tasks into autonomous coding work. You file a **bead**
+(a task in [Beads](https://github.com/gastownhall/beads), a git-backed,
+Dolt-powered issue tracker); Legion's reconciler **summons** a **vessel** —
+a container with an AI coding harness baked in — that clones your repo,
+does the work, and pushes a branch. The bead closes when the vessel exits
+clean.
 
 ```
-Operator          lg CLI               Beads (Dolt)          Archon
-   │                │                       │                   │
-   ├─ lg invoke ───►├─ bd create ──────────►│                   │
-   │                │                       │◄── pulse (5s) ────┤
-   │                │                       │                   ├─ docker run vessel
-   │                │                       │                   │       │
-   │                │                       │◄── bd show ───────┼── vessel-driver
-   │                │                       │◄── bd trace ──────┤       │
-   │                │                       │◄── bd close ──────┼───────┤
-   │                │                       │                   │◄── watcher (10s)
-   ├─ lg status ───►├─ bd list ────────────►│                   │
-   ├─ lg log <id> ──►├─ bd show ────────────►│                   │
+Operator ── lg ──► Beads (embedded Dolt) ◄── Archon (reconciler)
+                                                 │ summon / reap
+                                          ┌──────┴──────┐
+                                          │   Vessel    │  (docker/go-sdk)
+                                          │ ┌─────────┐ │
+                                          │ │ animus  │──ACP/stdio──► harness
+                                          │ └────▲────┘ │   (copilot, claude,
+                                          └──────┼──────┘    codex, opencode…)
+                                            MCP tools
+                                        (bead_get / trace / discover)
 ```
 
----
+## Vocabulary
 
-## Prerequisites
+"Agent" is banned as a bare noun around here.
 
-| Requirement | Notes |
+| Term | Meaning |
 |---|---|
-| Docker + Docker Compose | Vessel containers and the Archon service run in Docker. |
-| [`bd` CLI](https://github.com/steveyegge/beads) | On `PATH`. Beads is the issue and trace store. |
-| GitHub token | Needs Copilot access. Set as `GITHUB_TOKEN`. |
-| Initialized Beads repo | Run `bd init` in your repo before starting Legion. |
-| Git | Available inside vessel containers and on the host for reviewing results. |
+| **Bead** | The unit of work — a tracked task in Beads. |
+| **Vessel** | The unit of execution — a container image with an ACP-speaking harness baked in. |
+| **Harness** | The AI CLI inside the vessel (Copilot CLI, Claude Code, …). |
+| **Animus** | Legion's in-vessel driver: ACP client downward to the harness, MCP server upward to the model. |
+| **Persona** | A custom agent defined *in your repo* that the harness loads by name. Legion passes the name through, nothing more. |
+| **Archon** | The reconciler daemon. Summons vessels for ready beads, reaps exits, and is the only thing that closes or fails a bead. |
 
-**Windows users:** See [**WSL Setup Guide**](docs/SETUP-WSL.md) for instructions on running the test harness in Windows Subsystem for Linux (WSL2).
+## Quickstart
 
----
+Prerequisites: [Docker](https://docs.docker.com/get-docker/),
+[bd](https://github.com/gastownhall/beads) ≥ 1.2, Go ≥ 1.26 (to build), and a
+`GH_TOKEN` with push access to your repo.
 
-## Quick Start
+```sh
+# 1. Build the binaries and images
+go install ./cmd/lg
+docker build -f images/vessel-base/Dockerfile    -t legion/vessel-base .
+docker build -f images/vessel-copilot/Dockerfile -t legion/vessel-copilot .
 
-```bash
-# 1. Start Dolt (database) and Archon
-REPO_URL=https://github.com/your-org/your-repo \
-GITHUB_TOKEN=ghp_xxx \
-docker compose up -d
+# 2. In the repo you want Legion to work on
+lg init                       # bd init + .legion/config.toml template
+$EDITOR .legion/config.toml   # check repo_url and the vessel registry
 
-# 2. File a task — Archon picks it up automatically
-lg invoke "Add a health check endpoint to the API server"
-# Created issue: legion-4ab
+# 3. Start the reconciler (containerized; or `go run ./cmd/archon` on the host)
+docker compose up -d archon
 
-# 3. Watch it work
+# 4. File work and watch it happen
+lg invoke "Add a health check endpoint" --vessel copilot
 lg status
-# ID          TITLE                                        STATUS       ASSIGNED_TO
-# ──          ─────                                        ──────       ───────────
-# legion-4ab  Add a health check endpoint to the API...   in_progress  wraith
-
-# 4. Read the vessel's trace when it's done
-lg log legion-4ab
-# Issue: legion-4ab — Add a health check endpoint to the API server [closed]
-# Traces (12):
-#   [1] 2025-01-15T14:23:01Z  Starting ACP session
-#   [2] 2025-01-15T14:23:04Z  Cloned repo, checked out legion/legion-4ab
-#   ...
-
-# 5. Review and merge the branch
-git fetch origin
-git checkout legion/legion-4ab
-# review, test, merge
+lg log <bead-id> -f
 ```
 
----
+The result lands as branch `legion/<bead-id>` on your repo; the bead closes
+automatically when the vessel exits clean, or reopens with a `FAILED:` trace
+when it doesn't.
 
-## Configuration
+### Routing
 
-All configuration is passed as environment variables to `docker compose`.
+Routing is data on the bead, stored as labels:
 
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `REPO_URL` | ✓ | — | Git remote URL for vessels to clone. |
-| `GITHUB_TOKEN` | ✓ | — | GitHub PAT with Copilot access. Injected into vessel containers. |
-| `VESSEL_IMAGE` | | `legion/vessel-copilot:latest` | Docker image to spawn for each issue. |
-| `ARCHON_TIMEOUT` | | `3600` | Seconds before Archon marks a vessel as `stuck`. |
-| `VESSEL_TIMEOUT` | | — | Per-vessel timeout (set inside the image; inherits `ARCHON_TIMEOUT`). |
-| `VESSEL_MODEL` | | `gpt-5-mini` | Copilot model passed to the ACP session. |
-
----
-
-## Building from Source
-
-**Requirements:** Go 1.21+, Docker.
-
-```bash
-# Build all three binaries (host OS)
-go build -o archon.exe        ./cmd/archon
-go build -o vessel-driver.exe ./cmd/vessel-driver
-go build -o lg.exe            ./cmd/lg
-
-# Build the vessel image
-# vessel-driver must be built as a Linux binary first
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o vessel-driver ./cmd/vessel-driver
-docker build -f Dockerfile.vessel-copilot -t legion/vessel-copilot:latest .
-
-# Build the Archon service image (used by docker compose)
-docker compose build
+```sh
+lg invoke "Review the auth module" --vessel claude --persona reviewer
 ```
 
-`lg` can be run directly from the host — it only needs `bd` on `PATH`.
+- `--vessel` picks the image via the `[vessels]` registry in `.legion/config.toml`.
+- `--persona` names a custom agent defined in *your* repo; the harness resolves
+  it natively. Legion never parses, ships, or templates persona files.
 
----
+### Observability
 
-## Troubleshooting & Container Logs
+Every layer emits OpenTelemetry: one root trace per bead, from summon through
+every ACP turn to reap. Bring up the local stack and point Legion at it:
 
-During development, view container logs to debug Archon, Dolt, or vessel issues:
-
-```bash
-# All services
-docker compose logs -f
-
-# Specific service
-docker compose logs -f archon
-docker compose logs -f dolt
-
-# Common errors
-docker compose logs archon | grep -i error
+```sh
+docker compose --profile obs up -d
+OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4318 docker compose up -d archon
 ```
 
-For detailed debugging guide, health checks, and error patterns, see [**`docs/TROUBLESHOOTING.md`**](docs/TROUBLESHOOTING.md).
+Grafana (Tempo + Prometheus pre-provisioned) is at http://localhost:3000.
 
----
+## Layout
 
-## Open Issues / Known Limitations
-
-The autonomous loop is proven. See docs/ROADMAP.md for what comes next.
-
-| Gap | Status |
+| Path | What |
 |---|---|
-| Auto-merge via Inquisitor | Enabled — Inquisitor reviews and merges PRs autonomously |
-| Human writes task descriptions | No planner agent yet |
-| No CI gating | Human runs tests after reviewing the branch |
-| Single vessel at a time | Archon will queue if a second issue goes ready during an active run |
-| No retry on ACP failure | Failed vessels mark the issue `failed`; re-queue manually with `bd update <id> --status=open` |
-| Linux vessels only | `vessel-driver` is built for `linux/amd64`; Archon runs wherever Docker is available |
+| `cmd/lg` | Operator CLI: `init`, `invoke`, `status`, `log` |
+| `cmd/archon` | Reconciler daemon |
+| `cmd/animus` | In-vessel driver (also the MCP server, as `animus mcp`) |
+| `internal/{bead,vessel,acp,archon,animus,config,telemetry}` | The layers |
+| `images/` | `vessel-base`, `vessel-copilot`, `archon` Dockerfiles |
+| `deploy/obs/` | OTel Collector, Tempo, Prometheus, Grafana configs |
+| `docs/` | [Architecture](docs/architecture.md) and [ADRs](docs/adr/) |
 
-Track work in Beads: `bd list` to see all issues, `bd create "..." --type=task` to file new ones.
+## Development
+
+```sh
+go build ./... && go vet ./... && go test ./...
+go test -tags integration ./internal/vessel   # needs a Docker daemon
+```
+
+Work is tracked in Beads (`bd ready`, `bd show <id>`). Conventional commits.
+See [AGENTS.md](AGENTS.md) for the contributor contract and
+[docs/architecture.md](docs/architecture.md) for the full design.

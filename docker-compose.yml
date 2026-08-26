@@ -1,168 +1,64 @@
-# Legion local dev stack
-# Required env vars: REPO_URL, GITHUB_TOKEN
-# Optional env vars: VESSEL_IMAGE (default: legion/vessel-copilot:latest), ARCHON_TIMEOUT (default: 3600), VESSEL_MODEL (default: gpt-5-mini)
-# Config file: run 'lg init' first — creates .legion/archon.toml, which is bind-mounted into the archon container
-# Observability:
-#   Grafana:           http://localhost:3300  (traces, logs, metrics — unified UI)
-#   Prometheus:        http://localhost:9090  (metrics query UI)
-#   Tempo (traces):    via Grafana
-#   Loki (logs):       via Grafana
-# Usage:
-#   docker compose build
-#   REPO_URL=https://github.com/owner/repo GITHUB_TOKEN=ghp_xxx docker compose up
-# Beads (bd): Sanctuary is the single source of truth.
-#   Sanctuary Dolt runs in WSL2 at port 28204, serving the 'le' database.
-#   Windows host bd connects via 127.0.0.1:28204 (proxied by sanctuary-dolt-proxy.py at login).
-#   Docker containers connect via host.docker.internal:28204.
-#   Start Sanctuary first: in WSL2 run 'gc start' from ~/sanctuary before starting this stack.
+# Legion deployment: the archon reconciler, plus an optional local
+# observability stack (profile: obs).
+#
+#   docker compose up -d archon
+#   docker compose --profile obs up -d
+#
+# Vessels are summoned by the archon as sibling containers on the host
+# daemon (not inside this compose project). For vessel telemetry, point
+# OTEL_EXPORTER_OTLP_ENDPOINT at an address reachable from any container,
+# e.g. http://host.docker.internal:4318 with the obs profile running.
 
-# IMPORTANT: project name is pinned to "legion" so that Archon's hardcoded
-# --network=legion_legion-net in spawnVessel() always resolves correctly.
 name: legion
 
 services:
   archon:
     build:
       context: .
-      dockerfile: cmd/archon/Dockerfile
-    labels:
-      # Static labels baked onto the Archon container so Promtail and Grafana can
-      # classify and filter logs without relying on container-name parsing alone.
-      - "legion.role=archon"
-      - "legion.component=core"
+      dockerfile: images/archon/Dockerfile
+    restart: unless-stopped
     environment:
-      - REPO_URL=${REPO_URL}
-      - VESSEL_IMAGE=${VESSEL_IMAGE:-legion/vessel-copilot:latest}
-      - GITHUB_TOKEN=${GITHUB_TOKEN}
-      - ARCHON_TIMEOUT=${ARCHON_TIMEOUT:-3600}
-      - VESSEL_MODEL=${VESSEL_MODEL:-gpt-5-mini}
-      # Network vessels are attached to; must match the compose project-name prefix.
-      # Override with DOCKER_NETWORK=<name> if running under a non-default project name.
-      - DOCKER_NETWORK=${DOCKER_NETWORK:-legion_legion-net}
-      # Sanctuary is the single source of truth for beads.
-      # Sanctuary Dolt runs in WSL2 on port 28204; accessible from Docker via host.docker.internal.
-      # Vessels inherit these env vars so all bd calls route to the same Dolt instance.
-      - BEADS_DOLT_SERVER_HOST=host.docker.internal
-      - BEADS_DOLT_SERVER_PORT=28204
-      - BEADS_DOLT_SERVER_DATABASE=le
-      - VESSEL_TIMEOUT=900
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
-      - OTEL_SERVICE_NAME=legion.archon
+      GH_TOKEN: ${GH_TOKEN:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      # Archon config — created by 'lg init'. Required before starting Archon.
-      - ./.legion/archon.toml:/etc/legion/archon.toml:ro
-    restart: unless-stopped
-    depends_on:
-      otel-collector:
-        condition: service_started
-    networks:
-      - legion-net
+      - ./.legion:/legion/.legion:ro
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:latest
+    image: otel/opentelemetry-collector-contrib:0.120.0
+    profiles: [obs]
     command: ["--config=/etc/otel/config.yaml"]
     volumes:
-      - ./observability/otel-collector.yaml:/etc/otel/config.yaml:ro
+      - ./deploy/obs/otel-collector.yaml:/etc/otel/config.yaml:ro
     ports:
-      - "4318:4318"   # OTLP HTTP (from binaries on host)
-      - "4317:4317"   # OTLP gRPC
-      - "13133:13133" # Health check endpoint
-    depends_on:
-      - tempo
-      - loki
-    networks:
-      - legion-net
+      - "4317:4317" # OTLP gRPC
+      - "4318:4318" # OTLP HTTP
 
   tempo:
-    image: grafana/tempo:2.10.2
-    command: ["-config.file=/etc/tempo.yaml"]
+    image: grafana/tempo:2.7.1
+    profiles: [obs]
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
     volumes:
-      - ./observability/tempo.yaml:/etc/tempo.yaml:ro
+      - ./deploy/obs/tempo.yaml:/etc/tempo/tempo.yaml:ro
       - tempo-data:/var/tempo
-    ports:
-      - "3200:3200"   # Tempo UI / query API
-    networks:
-      - legion-net
-
-  loki:
-    image: grafana/loki:latest
-    command: ["-config.file=/etc/loki/config.yaml"]
-    volumes:
-      - ./observability/loki.yaml:/etc/loki/config.yaml:ro
-      - loki-data:/loki
-    ports:
-      - "3100:3100"
-    networks:
-      - legion-net
-
-  promtail:
-    image: grafana/promtail:latest
-    # NOTE: grafana/promtail:2.9.10 uses Docker API v1.42 which is rejected by Docker Engine
-    # requiring minimum v1.44. Pinned to latest (Promtail 3.x) so the Docker SD job works.
-    # If you need a pinned version, use 3.0.0 or higher.
-    command: ["-config.file=/etc/promtail/config.yaml"]
-    volumes:
-      - ./observability/promtail.yaml:/etc/promtail/config.yaml:ro
-      # Docker socket — read-only; Promtail uses the Docker API to read container logs
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      # Docker JSON log files — fallback path for ephemeral vessel containers.
-      # Vessel containers are removed by Archon before Docker SD can flush tail-end
-      # logs; mounting this directory lets the docker-json-files job read the files
-      # directly, which persist briefly after container removal.
-      # NOTE: on Linux the host path is /var/lib/docker/containers; on Docker Desktop
-      # (Mac/Windows) the files live inside the VM — this mount will be empty but
-      # harmless. Primary log capture on non-Linux still works via the Docker SD job.
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
-    depends_on:
-      - loki
-    networks:
-      - legion-net
-    restart: unless-stopped
 
   prometheus:
-    image: prom/prometheus:latest
-    command:
-      - --config.file=/etc/prometheus/prometheus.yml
-      - --web.enable-remote-write-receiver
+    image: prom/prometheus:v3.2.1
+    profiles: [obs]
     volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-    ports:
-      - "9090:9090"     # Prometheus UI
-    networks:
-      - legion-net
+      - ./deploy/obs/prometheus.yml:/etc/prometheus/prometheus.yml:ro
 
   grafana:
-    image: grafana/grafana:latest
-    ports:
-      - "3300:3000"
+    image: grafana/grafana:11.5.2
+    profiles: [obs]
     environment:
-      - GF_AUTH_ANONYMOUS_ENABLED=true
-      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
-      - GF_AUTH_DISABLE_LOGIN_FORM=true
-      # SQLite WAL mode — allows concurrent readers and prevents "database is locked" crashes
-      # under Grafana 11's unified storage reconciliation loop.
-      - GF_DATABASE_WAL=true
-      # Disable the grafana-apiserver's gRPC client loop; it repeatedly tries gRPC on
-      # tempo:3200 (an HTTP/1.1 server) causing log spam and goroutine pressure.
-      # The Tempo *datasource* plugin uses HTTP and is unaffected by this flag.
-      - GF_GRAFANA_APP_PLATFORM_GRPC_SERVER_ENABLED=false
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
     volumes:
-      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
-      - grafana-data:/var/lib/grafana
-    depends_on:
-      - tempo
-      - loki
-      - prometheus
-    networks:
-      - legion-net
-
-networks:
-  legion-net:
-    driver: bridge
+      - ./deploy/obs/grafana/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+    ports:
+      - "3000:3000"
 
 volumes:
   tempo-data:
-  loki-data:
-  grafana-data:
