@@ -104,6 +104,18 @@ func (c *Client) Ready(ctx context.Context) ([]Bead, error) {
 	return bs, err
 }
 
+// List lists beads, optionally filtered by status (open, in_progress, …).
+func (c *Client) List(ctx context.Context, status string) ([]Bead, error) {
+	ctx, span := c.span(ctx, "list", "")
+	args := []string{"list"}
+	if status != "" {
+		args = append(args, "--status", status)
+	}
+	bs, err := c.beads(ctx, args...)
+	end(span, err)
+	return bs, err
+}
+
 // Get fetches one bead by ID.
 func (c *Client) Get(ctx context.Context, id string) (*Bead, error) {
 	ctx, span := c.span(ctx, "get", id)
