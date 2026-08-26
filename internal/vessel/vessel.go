@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"time"
 
 	"github.com/docker/go-sdk/client"
 	"github.com/docker/go-sdk/container"
@@ -40,12 +41,16 @@ type Spec struct {
 
 // Vessel is a summoned (or previously summoned) vessel container.
 type Vessel struct {
-	ID     string
-	BeadID string
-	Name   string
-	Image  string
-	State  string // running, exited, …
+	ID        string
+	BeadID    string
+	Name      string
+	Image     string
+	State     string // running, exited, …
+	CreatedAt time.Time
 }
+
+// Running reports whether the vessel container is still running.
+func (v *Vessel) Running() bool { return v.State == "running" }
 
 // dockerAPI is the slice of the Docker SDK the manager uses. client.SDKClient
 // satisfies it; tests fake it.
@@ -133,7 +138,7 @@ func (m *Manager) Summon(ctx context.Context, spec Spec) (*Vessel, error) {
 	if err != nil {
 		return nil, fmt.Errorf("summon vessel for %s: %w", spec.BeadID, err)
 	}
-	return &Vessel{ID: id, BeadID: spec.BeadID, Name: spec.Name, Image: spec.Image, State: "running"}, nil
+	return &Vessel{ID: id, BeadID: spec.BeadID, Name: spec.Name, Image: spec.Image, State: "running", CreatedAt: time.Now()}, nil
 }
 
 // List returns all Legion-managed vessels, running or exited.
@@ -150,11 +155,12 @@ func (m *Manager) List(ctx context.Context) ([]Vessel, error) {
 	vessels := make([]Vessel, 0, len(res.Items))
 	for _, c := range res.Items {
 		vessels = append(vessels, Vessel{
-			ID:     c.ID,
-			BeadID: c.Labels[LabelBeadID],
-			Name:   c.Labels[LabelVessel],
-			Image:  c.Image,
-			State:  string(c.State),
+			ID:        c.ID,
+			BeadID:    c.Labels[LabelBeadID],
+			Name:      c.Labels[LabelVessel],
+			Image:     c.Image,
+			State:     string(c.State),
+			CreatedAt: time.Unix(c.Created, 0),
 		})
 	}
 	return vessels, nil
