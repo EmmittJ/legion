@@ -1,5 +1,5 @@
 # Legion deployment: the archon reconciler, plus an optional local
-# observability stack (profile: obs).
+# observability dashboard (profile: obs).
 #
 #   docker compose up -d archon
 #   docker compose --profile obs up -d
@@ -25,40 +25,14 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./.legion:/legion/.legion:ro
 
-  otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.120.0
-    profiles: [obs]
-    command: ["--config=/etc/otel/config.yaml"]
-    volumes:
-      - ./deploy/obs/otel-collector.yaml:/etc/otel/config.yaml:ro
-    ports:
-      - "4317:4317" # OTLP gRPC
-      - "4318:4318" # OTLP HTTP
-
-  tempo:
-    image: grafana/tempo:2.7.1
-    profiles: [obs]
-    command: ["-config.file=/etc/tempo/tempo.yaml"]
-    volumes:
-      - ./deploy/obs/tempo.yaml:/etc/tempo/tempo.yaml:ro
-      - tempo-data:/var/tempo
-
-  prometheus:
-    image: prom/prometheus:v3.2.1
-    profiles: [obs]
-    volumes:
-      - ./deploy/obs/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-
-  grafana:
-    image: grafana/grafana:11.5.2
+  dashboard:
+    image: mcr.microsoft.com/dotnet/aspire-dashboard:9.5.2
     profiles: [obs]
     environment:
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
-    volumes:
-      - ./deploy/obs/grafana/datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml:ro
+      # Dev-loop convenience: no browser-token login prompt. Do not set this
+      # in any deployment reachable outside a trusted local/dev network.
+      ASPIRE_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS: "true"
     ports:
-      - "3000:3000"
-
-volumes:
-  tempo-data:
+      - "18888:18888" # dashboard UI
+      - "4317:18889"  # OTLP gRPC
+      - "4318:18890"  # OTLP HTTP

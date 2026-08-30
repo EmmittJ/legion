@@ -86,7 +86,7 @@ docker compose --profile obs up -d
 OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4318 docker compose up -d archon
 ```
 
-Grafana (Tempo + Prometheus pre-provisioned) is at http://localhost:3000.
+The [Aspire dashboard](https://aspire.dev/) is at http://localhost:18888 — traces, structured logs, and metrics correlated in one view, keyed by trace ID.
 
 ## Layout
 
@@ -97,7 +97,6 @@ Grafana (Tempo + Prometheus pre-provisioned) is at http://localhost:3000.
 | `cmd/animus` | In-vessel driver (also the MCP server, as `animus mcp`) |
 | `internal/{bead,vessel,acp,archon,animus,config,telemetry}` | The layers |
 | `images/` | `vessel-base`, `vessel-copilot`, `archon` Dockerfiles |
-| `deploy/obs/` | OTel Collector, Tempo, Prometheus, Grafana configs |
 | `docs/` | [Architecture](docs/architecture.md) and [ADRs](docs/adr/) |
 
 ## Development
