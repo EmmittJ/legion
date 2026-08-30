@@ -105,3 +105,4 @@ bead_timeout = "30m"
 | [0006](adr/0006-otel-conventions.md) | OTel everywhere; `legion.*` semantic conventions |
 | [0007](adr/0007-aspire-dashboard.md) | Aspire dashboard replaces the four-service obs stack |
 | [0008](adr/0008-kubernetes-vessels.md) | Vessels run as Kubernetes Jobs; supersedes ADR-0001 |
+| [0009](adr/0009-archon-ahp-host.md) | Archon becomes an AHP host; ACP stays the harness protocol |
