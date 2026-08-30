@@ -103,3 +103,5 @@ bead_timeout = "30m"
 | [0004](adr/0004-vessel-registry-persona-passthrough.md) | Per-bead routing via labels; Legion owns zero persona formats |
 | [0005](adr/0005-animus-mcp-server.md) | Animus serves scoped MCP tools into the session |
 | [0006](adr/0006-otel-conventions.md) | OTel everywhere; `legion.*` semantic conventions |
+| [0007](adr/0007-aspire-dashboard.md) | Aspire dashboard replaces the four-service obs stack |
+| [0008](adr/0008-kubernetes-vessels.md) | Vessels run as Kubernetes Jobs; supersedes ADR-0001 |
