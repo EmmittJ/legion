@@ -26,7 +26,7 @@ services:
       - ./.legion:/legion/.legion:ro
 
   dashboard:
-    image: mcr.microsoft.com/dotnet/aspire-dashboard:9.5.2
+    image: mcr.microsoft.com/dotnet/aspire-dashboard:13.5
     profiles: [obs]
     environment:
       # Dev-loop convenience: no browser-token login prompt. Do not set this
