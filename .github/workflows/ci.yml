@@ -26,7 +26,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      # Use the `docker` driver (not the default `docker-container` one) so
+      # each build shares the runner's local image store. That's required
+      # for vessel-copilot's `FROM legion/vessel-base:latest` to resolve to
+      # the image built in the previous step instead of trying to pull a
+      # nonexistent `legion/vessel-base` from Docker Hub. Trade-off: the
+      # `docker` driver can't export to the GHA cache backend on runners
+      # without the containerd image store enabled, so these builds rely
+      # on Docker layer caching from `load: true` instead of `cache-from`/
+      # `cache-to: type=gha`.
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        with:
+          driver: docker
       - name: Build vessel-base
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
@@ -34,8 +45,6 @@ jobs:
           file: images/vessel-base/Dockerfile
           tags: legion/vessel-base:latest
           load: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
       - name: Build vessel-copilot
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
@@ -43,8 +52,6 @@ jobs:
           file: images/vessel-copilot/Dockerfile
           tags: legion/vessel-copilot:latest
           load: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
       - name: Build archon
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
@@ -52,5 +59,3 @@ jobs:
           file: images/archon/Dockerfile
           tags: legion/archon:latest
           load: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
